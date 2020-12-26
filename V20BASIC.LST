@@ -1,0 +1,1559 @@
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE   1
+
+
+                        ;       SBCV20 NASCOM BASIC
+                        ;       Assembler: asm86.com/asm86.cmd
+                        ;
+   0000                 RAM     equ     0000h   ;RAM top
+   8000                 ROM     equ     8000h   ;Rom top
+   0500                 STACK   equ     0500h   ;Stack top
+   0000                 EMEM    equ     0000h   ;Memory top in emulation mode
+   8200                 EMROM   equ     8200h   ;Start address in emulation mode
+   0000                 REGAD   equ     00h     ;8251 data register
+   0001                 REGAC   equ     01h     ;8251 control register
+   0017                 RTSHIG  equ     17h     ;RTS high
+   0037                 RTSLOW  equ     37h     ;RTS low
+                        ;
+   0080                 BUFSIZ  equ     128             ;Buffer size(2^n, max128)
+   0070                 FULSIZ  equ     BUFSIZ*14/16    ;Buffer almost full
+                        ;
+                        ;
+                                dseg
+                                org     RAM
+                        ;
+                        ;       Interrupt vector
+ 0000                   DEVERR  rw      2       ;Devide error
+ 0004                   BRKFLG  rw      2       ;Break flag
+ 0008                   NMIREQ  rw      2       ;Non maskable interrupt
+ 000C                   BR3INS  rw      2       ;BRK3 instruction
+ 0010                   BRVINS  rw      2       ;BRKV instruction
+ 0014                   CHKINS  rw      2       ;CHKIND instruction
+                                org     0400h-20
+ 03EC                   VGETCH  rw      2       ;CALLN 251
+ 03F0                   VKBHIT  rw      2       ;CALLN 252
+ 03F4                   VPUTCH  rw      2       ;CALLN 253
+ 03F8                   VBRKEM  rw      2       ;BRKEM 254
+ 03FC                   INTREQ  rw      2       ;External interrupt
+                        ;
+                        ;       Receive buffer
+ 0400                   RECBUF  rb      BUFSIZ  ;Buffer
+ 0480                   RBFRDP  rw      1       ;Read address
+ 0482                   RBFWTP  rw      1       ;Write address
+ 0484                   RBFCNT  rb      1       ;Count of chars
+                        ;
+                                cseg
+                                org     ROM
+                        ;
+                        ;       8251 -> buffer by interrupt
+                        ;
+ 8000 50                intsr:  push    ax      ;Save ax
+ 8001 53                        push    bx      ;Save bx
+ 8002 E400                      in      al,REGAD        ;Get char
+ 8004 8AE0                      mov     ah,al           ;Save it
+                        ;
+ 8006 A08404                    mov     al,RBFCNT       ;Get count of chars
+ 8009 3C80                      cmp     al,BUFSIZ       ;Buffer full?
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE   2
+
+
+ 800B 741E         802B         jz      isext           ;If yes, ignore
+ 800D FEC0                      inc     al              ;Count up
+ 800F A28404                    mov     RBFCNT,al       ;Update
+ 8012 3C70                      cmp     al,FULSIZ       ;Buffer almost full?
+ 8014 7504         801A         jnz     isst1           ;If no, skip flow control
+ 8016 B017                      mov     al,RTSHIG       ;RTS control
+ 8018 E601                      out     REGAC,al        ;Out it
+                        ;
+ 801A 8B1E8204          isst1:  mov     bx,RBFWTP       ;Get write point
+ 801E 8AC4                      mov     al,ah           ;Restore char
+ 8020 8807                      mov     [bx],al         ;Write char into buffer
+                        ;
+ 8022 FEC3                      inc     bl              ;Next write point
+ 8024 80E37F                    and     bl,BUFSIZ-1     ;Wrap
+ 8027 891E8204                  mov     RBFWTP,bx       ;Update
+                        ;
+ 802B 5B                isext:  pop     bx      ;Restore bx
+ 802C 58                        pop     ax      ;Restore ax
+ 802D FB                        sti             ;Enable interrupt
+ 802E CF                        iret
+                        ;
+                        ;       buffer -> al
+ 802F 53                getch:  push    bx      ;Save bx
+                        ;
+ 8030 A08404            gcst1:  mov     al,RBFCNT       ;Get count of chars
+ 8033 3C00                      cmp     al,0            ;Buffer enpty?
+ 8035 74F9         8030         jz      gcst1           ;If yes, wait
+ 8037 FA                        cli                     ;Disable interrupt
+                        ;
+ 8038 A08404                    mov     al,RBFCNT       ;Critical timing measures
+ 803B 3C70                      cmp     al,FULSIZ       ;Need flow control?
+ 803D 7508         8047         jnz     gcst2           ;If no, skip flow control
+ 803F 8AE0                      mov     ah,al           ;Save char
+ 8041 B037                      mov     al,RTSLOW       ;RTS control
+ 8043 E601                      out     REGAC,al        ;Out it
+ 8045 8AC4                      mov     al,ah           ;Restore char
+ 8047 FEC8              gcst2:  dec     al              ;Count down
+ 8049 A28404                    mov     RBFCNT,al       ;Update
+                        ;
+ 804C 8B1E8004                  mov     bx,RBFRDP       ;Get read point
+ 8050 8A07                      mov     al,[bx]         ;Read char from buffer
+                        ;
+ 8052 FEC3                      inc     bl              ;Next read point
+ 8054 80E37F                    and     bl,BUFSIZ-1     ;Wrap
+ 8057 891E8004                  mov     RBFRDP,bx       ;Update
+                        ;
+ 805B 5B                        pop     bx      ;Restore bx
+ 805C FB                        sti             ;Enable interrupt
+ 805D C3                        ret
+                        ;
+                        ;       al -> 8251
+ 805E 50                putch:  push    ax              ;Save char
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE   3
+
+
+                        ;
+ 805F E401              pcst1:  in      al,REGAC        ;Get status
+ 8061 2401                      and     al,01h          ;check TxBUF enpty
+ 8063 74FA         805F         jz      pcst1           ;wait for empty
+                        ;
+ 8065 58                        pop     ax              ;Restore char
+ 8066 E600                      out     REGAD,al        ;Out it
+ 8068 C3                        ret
+                        ;
+                        ;       put string
+ 8069 FC                puts:   cld                     ;set DF for SI increment
+ 806A AC                ptst1:  lodsb                   ;get data to AL and SI++
+ 806B 3C00                      cmp     al,00h          ;check tail
+ 806D 7406         8075         jz      ptext           ;if tail, return
+ 806F E8ECFF       805E         call    putch           ;display a charactor
+ 8072 E9F5FF       806A         jmp     ptst1           ;loop until tail
+ 8075 C3                ptext:  ret
+                        ;
+                        ;       message
+ 8076 0D0A50524F43      ckcpu   db      13,10,'PROCESSOR: ',0
+      4553534F523A
+      2000
+ 8084 4E4543205632      nec     db      'NEC V20(uPD70108)',13,10
+      302875504437
+      30313038290D
+      0A
+ 8097 49742077696C              db      'It will soon be turned 8080 emulation mode.',13,10,0
+      6C20736F6F6E
+      206265207475
+      726E65642038
+      30383020656D
+      756C6174696F
+      6E206D6F6465
+      2E0D0A00
+ 80C5 496E74656C20      intel   db      'Intel 8088',13,10
+      383038380D0A
+ 80D1 536F7272792C              db      'Sorry, It will soon be out of control',13,10,0
+      204974207769
+      6C6C20736F6F
+      6E206265206F
+      7574206F6620
+      636F6E74726F
+      6C0D0A00
+ 80F9 52657475726E      natv    db      'Returned to native mode.',13,10
+      656420746F20
+      6E6174697665
+      206D6F64652E
+      0D0A
+ 8113 546865726520              db      'There is no code to run, so please reset.',13,10,0
+      6973206E6F20
+      636F64652074
+      6F2072756E2C
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE   4
+
+
+      20736F20706C
+      656173652072
+      657365742E0D
+      0A00
+                        ;
+                        ;       CALLN wrapping
+ 813F E8EDFE       802F ngetch: call    getch           ;Get a char
+ 8142 CF                        iret
+ 8143 A08404            nkbhit: mov     al,RBFCNT       ;Get count of char
+ 8146 CF                        iret
+ 8147 E814FF       805E nputch: call    putch           ;Put a char
+ 814A CF                        iret
+                        ;
+                        ;       Start
+ 814B 8CC8              start:  mov     ax,cs           ;Set com model
+ 814D 8ED8                      mov     ds,ax           ;Overlay ds with cs
+ 814F 8EC0                      mov     es,ax           ;Overlay es with cs
+ 8151 8ED0                      mov     ss,ax           ;Overlay ss with cs
+ 8153 BC0005                    mov     sp,STACK        ;Set stack
+                        ;
+                        ;       Vector 251-255 setup
+ 8156 C706EC033F81              mov     VGETCH,offset ngetch
+ 815C A3EE03                    mov     VGETCH+2,ax
+ 815F C706F0034381              mov     VKBHIT,offset nkbhit
+ 8165 A3F203                    mov     VKBHIT+2,ax
+ 8168 C706F4034781              mov     VPUTCH,offset nputch
+ 816E A3F603                    mov     VPUTCH+2,ax
+ 8171 C706F8030082              mov     VBRKEM,EMROM
+ 8177 A3FA03                    mov     VBRKEM+2,ax
+ 817A C706FC030080              mov     INTREQ,offset intsr
+ 8180 A3FE03                    mov     INTREQ+2,ax
+                        ;
+                        ;       8251 setup
+ 8183 BA0100                    mov     dx,REGAC
+ 8186 B000                      mov     al,00h  ;Default mode or no operation
+ 8188 EE                        out     dx,al   ;Try command
+ 8189 EE                        out     dx,al   ;Try command
+ 818A EE                        out     dx,al   ;Try command
+ 818B B040                      mov     al,40h  ;reset
+ 818D EE                        out     dx,al   ;Out it
+ 818E B91000                    mov     CX,16   ;Delay
+ 8191 E2FE         8191         loop    $       ;Delay
+ 8193 B04E                      mov     al,4eh  ;mode
+ 8195 EE                        out     dx,al   ;Out it
+ 8196 B037                      mov     al,37h  ;command
+ 8198 EE                        out     dx,al   ;Out it
+                        ;
+                        ;       Buffer initialize
+ 8199 32C0                      xor     al,al                   ;Clear al
+ 819B A28404                    mov     RBFCNT,al               ;Set count of chars
+ 819E B80004                    mov     ax,offset RECBUF        ;Get buffer top
+ 81A1 A38004                    mov     RBFRDP,ax               ;Set read point
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE   5
+
+
+ 81A4 A38204                    mov     RBFWTP,ax               ;Set write point
+                        ;
+ 81A7 FB                        sti             ;Enable interrupt
+                        ;
+                        ;       Check CPU
+ 81A8 BE7680                    mov     si,offset ckcpu ;set message top
+ 81AB E8BBFE       8069         call    puts            ;display message
+                        ;
+ 81AE B80101                    mov     ax,0101h
+ 81B1 D510                      db      0d5h,10h        ;aad 10h
+ 81B3 3C0B                      cmp     al,0bh          ;NEC V20 ignores the argument
+ 81B5 7408         81BF         je      isv20           ;If V20, skip follw 3 step
+ 81B7 BEC580                    mov     si,offset intel ;8088 message
+ 81BA E8ACFE       8069         call    puts            ;Out it
+ 81BD EBFE         81BD         jmps    $               ;Stop
+ 81BF E8A7FE       8069 isV20:  call    puts            ;V20 message
+                        ;
+                        ;       Emulation sequence
+ 81C2 0FFF                      db      0fh,0ffh        ;BRKEM
+ 81C4 FE                        db      offset VBRKEM/4 ;Vector number
+                        ;
+                        ;       Returned native mode
+ 81C5 BEF980                    mov     si,offset natv  ;8088 message
+ 81C8 E89EFE       8069         call    puts            ;Out it
+ 81CB EBFE         81CB         jmps    $               ;Stop
+                        ;
+                        ;       Emulated 8080 code
+                        ;       See MSBASV20.ASM
+                                org     EMROM
+ 8200 C31382EDEDFB              db      0c3h, 013h, 082h, 0edh, 0edh, 0fbh
+ 8206 C9EDEDFDC9ED              db      0c9h, 0edh, 0edh, 0fdh, 0c9h, 0edh
+ 820C EDFCFE00C9ED              db      0edh, 0fch, 0feh, 000h, 0c9h, 0edh
+ 8212 FD216605F9C3              db      0fdh, 021h, 066h, 005h, 0f9h, 0c3h
+ 8218 1A82C32082C3              db      01ah, 082h, 0c3h, 020h, 082h, 0c3h
+ 821E 9582C32782EC              db      095h, 082h, 0c3h, 027h, 082h, 0ech
+ 8224 8A6392210005              db      08ah, 063h, 092h, 021h, 000h, 005h
+ 822A F9C38D9E1105              db      0f9h, 0c3h, 08dh, 09eh, 011h, 005h
+ 8230 850663210005              db      085h, 006h, 063h, 021h, 000h, 005h
+ 8236 1A77231305C2              db      01ah, 077h, 023h, 013h, 005h, 0c2h
+ 823C 3682F9CD0687              db      036h, 082h, 0f9h, 0cdh, 006h, 087h
+ 8242 CDE28C32AA05              db      0cdh, 0e2h, 08ch, 032h, 0aah, 005h
+ 8248 32F905215D06              db      032h, 0f9h, 005h, 021h, 05dh, 006h
+ 824E 237CB5CA5D82              db      023h, 07ch, 0b5h, 0cah, 05dh, 082h
+ 8254 7E472F77BE70              db      07eh, 047h, 02fh, 077h, 0beh, 070h
+ 825A CA4E822B115C              db      0cah, 04eh, 082h, 02bh, 011h, 05ch
+ 8260 06CD9C88DA9E              db      006h, 0cdh, 09ch, 088h, 0dah, 09eh
+ 8266 8211CEFF22AF              db      082h, 011h, 0ceh, 0ffh, 022h, 0afh
+ 826C 0519225A05CD              db      005h, 019h, 022h, 05ah, 005h, 0cdh
+ 8272 E1862A5A0511              db      0e1h, 086h, 02ah, 05ah, 005h, 011h
+ 8278 EFFF1911F905              db      0efh, 0ffh, 019h, 011h, 0f9h, 005h
+ 827E 7D936F7C9A67              db      07dh, 093h, 06fh, 07ch, 09ah, 067h
+ 8284 E521B682CD81              db      0e5h, 021h, 0b6h, 082h, 0cdh, 081h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE   6
+
+
+ 828A 93E1CD269A21              db      093h, 0e1h, 0cdh, 026h, 09ah, 021h
+ 8290 A782CD819331              db      0a7h, 082h, 0cdh, 081h, 093h, 031h
+ 8296 6605CD0687C3              db      066h, 005h, 0cdh, 006h, 087h, 0c3h
+ 829C 1F8621F382CD              db      01fh, 086h, 021h, 0f3h, 082h, 0cdh
+ 82A2 8193C3A48220              db      081h, 093h, 0c3h, 0a4h, 082h, 020h
+ 82A8 427974657320              db      042h, 079h, 074h, 065h, 073h, 020h
+ 82AE 667265650D0A              db      066h, 072h, 065h, 065h, 00dh, 00ah
+ 82B4 0000494E5445              db      000h, 000h, 049h, 04eh, 054h, 045h
+ 82BA 4C3830383020              db      04ch, 038h, 030h, 038h, 030h, 020h
+ 82C0 424153494320              db      042h, 041h, 053h, 049h, 043h, 020h
+ 82C6 56657220342E              db      056h, 065h, 072h, 020h, 034h, 02eh
+ 82CC 37620D0A436F              db      037h, 062h, 00dh, 00ah, 043h, 06fh
+ 82D2 707972696768              db      070h, 079h, 072h, 069h, 067h, 068h
+ 82D8 742028432920              db      074h, 020h, 028h, 043h, 029h, 020h
+ 82DE 313937382062              db      031h, 039h, 037h, 038h, 020h, 062h
+ 82E4 79204D696372              db      079h, 020h, 04dh, 069h, 063h, 072h
+ 82EA 6F736F66740D              db      06fh, 073h, 06fh, 066h, 074h, 00dh
+ 82F0 0A00004D656D              db      00ah, 000h, 000h, 04dh, 065h, 06dh
+ 82F6 6F7279207369              db      06fh, 072h, 079h, 020h, 073h, 069h
+ 82FC 7A65206E6F74              db      07ah, 065h, 020h, 06eh, 06fh, 074h
+ 8302 20656E6F7567              db      020h, 065h, 06eh, 06fh, 075h, 067h
+ 8308 680D0A546865              db      068h, 00dh, 00ah, 054h, 068h, 065h
+ 830E 207379737465              db      020h, 073h, 079h, 073h, 074h, 065h
+ 8314 6D2069732073              db      06dh, 020h, 069h, 073h, 020h, 073h
+ 831A 746F70706564              db      074h, 06fh, 070h, 070h, 065h, 064h
+ 8320 2E0D0A00009B              db      02eh, 00dh, 00ah, 000h, 000h, 09bh
+ 8326 985F99B19803              db      098h, 05fh, 099h, 0b1h, 098h, 003h
+ 832C 054192C8956F              db      005h, 041h, 092h, 0c8h, 095h, 06fh
+ 8332 92259B049C40              db      092h, 025h, 09bh, 004h, 09ch, 040h
+ 8338 97739B799C7F              db      097h, 073h, 09bh, 079h, 09ch, 07fh
+ 833E 9CE09CF59C1C              db      09ch, 0e0h, 09ch, 0f5h, 09ch, 01ch
+ 8344 96609D5105F3              db      096h, 060h, 09dh, 051h, 005h, 0f3h
+ 834A 940B938D9502              db      094h, 00bh, 093h, 08dh, 095h, 002h
+ 8350 951395829D1F              db      095h, 013h, 095h, 082h, 09dh, 01fh
+ 8356 9E239553955D              db      09eh, 023h, 095h, 053h, 095h, 05dh
+ 835C 95C54E44C64F              db      095h, 0c5h, 04eh, 044h, 0c6h, 04fh
+ 8362 52CE455854C4              db      052h, 0ceh, 045h, 058h, 054h, 0c4h
+ 8368 415441C94E50              db      041h, 054h, 041h, 0c9h, 04eh, 050h
+ 836E 5554C4494DD2              db      055h, 054h, 0c4h, 049h, 04dh, 0d2h
+ 8374 454144CC4554              db      045h, 041h, 044h, 0cch, 045h, 054h
+ 837A C74F544FD255              db      0c7h, 04fh, 054h, 04fh, 0d2h, 055h
+ 8380 4EC946D24553              db      04eh, 0c9h, 046h, 0d2h, 045h, 053h
+ 8386 544F5245C74F              db      054h, 04fh, 052h, 045h, 0c7h, 04fh
+ 838C 535542D24554              db      053h, 055h, 042h, 0d2h, 045h, 054h
+ 8392 55524ED2454D              db      055h, 052h, 04eh, 0d2h, 045h, 04dh
+ 8398 D3544F50CF55              db      0d3h, 054h, 04fh, 050h, 0cfh, 055h
+ 839E 54CF4ECE554C              db      054h, 0cfh, 04eh, 0ceh, 055h, 04ch
+ 83A4 4CD7414954C4              db      04ch, 0d7h, 041h, 049h, 054h, 0c4h
+ 83AA 4546D04F4B45              db      045h, 046h, 0d0h, 04fh, 04bh, 045h
+ 83B0 C44F4B45D343              db      0c4h, 04fh, 04bh, 045h, 0d3h, 043h
+ 83B6 5245454ECC49              db      052h, 045h, 045h, 04eh, 0cch, 049h
+ 83BC 4E4553C34C53              db      04eh, 045h, 053h, 0c3h, 04ch, 053h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE   7
+
+
+ 83C2 D749445448CD              db      0d7h, 049h, 044h, 054h, 048h, 0cdh
+ 83C8 4F4E49544F52              db      04fh, 04eh, 049h, 054h, 04fh, 052h
+ 83CE D34554D24553              db      0d3h, 045h, 054h, 0d2h, 045h, 053h
+ 83D4 4554D052494E              db      045h, 054h, 0d0h, 052h, 049h, 04eh
+ 83DA 54C34F4E54CC              db      054h, 0c3h, 04fh, 04eh, 054h, 0cch
+ 83E0 495354C34C45              db      049h, 053h, 054h, 0c3h, 04ch, 045h
+ 83E6 4152C34C4F41              db      041h, 052h, 0c3h, 04ch, 04fh, 041h
+ 83EC 44C353415645              db      044h, 0c3h, 053h, 041h, 056h, 045h
+ 83F2 CE4557D44142              db      0ceh, 045h, 057h, 0d4h, 041h, 042h
+ 83F8 28D44FC64ED3              db      028h, 0d4h, 04fh, 0c6h, 04eh, 0d3h
+ 83FE 504328D44845              db      050h, 043h, 028h, 0d4h, 048h, 045h
+ 8404 4ECE4F54D354              db      04eh, 0ceh, 04fh, 054h, 0d3h, 054h
+ 840A 4550ABADAAAF              db      045h, 050h, 0abh, 0adh, 0aah, 0afh
+ 8410 DEC14E44CF52              db      0deh, 0c1h, 04eh, 044h, 0cfh, 052h
+ 8416 BEBDBCD3474E              db      0beh, 0bdh, 0bch, 0d3h, 047h, 04eh
+ 841C C94E54C14253              db      0c9h, 04eh, 054h, 0c1h, 042h, 053h
+ 8422 D55352C65245              db      0d5h, 053h, 052h, 0c6h, 052h, 045h
+ 8428 C94E50D04F53              db      0c9h, 04eh, 050h, 0d0h, 04fh, 053h
+ 842E D35152D24E44              db      0d3h, 051h, 052h, 0d2h, 04eh, 044h
+ 8434 CC4F47C55850              db      0cch, 04fh, 047h, 0c5h, 058h, 050h
+ 843A C34F53D3494E              db      0c3h, 04fh, 053h, 0d3h, 049h, 04eh
+ 8440 D4414EC1544E              db      0d4h, 041h, 04eh, 0c1h, 054h, 04eh
+ 8446 D045454BC445              db      0d0h, 045h, 045h, 04bh, 0c4h, 045h
+ 844C 454BD04F494E              db      045h, 04bh, 0d0h, 04fh, 049h, 04eh
+ 8452 54CC454ED354              db      054h, 0cch, 045h, 04eh, 0d3h, 054h
+ 8458 5224D6414CC1              db      052h, 024h, 0d6h, 041h, 04ch, 0c1h
+ 845E 5343C3485224              db      053h, 043h, 0c3h, 048h, 052h, 024h
+ 8464 C8455824C249              db      0c8h, 045h, 058h, 024h, 0c2h, 049h
+ 846A 4E24CC454654              db      04eh, 024h, 0cch, 045h, 046h, 054h
+ 8470 24D249474854              db      024h, 0d2h, 049h, 047h, 048h, 054h
+ 8476 24CD49442480              db      024h, 0cdh, 049h, 044h, 024h, 080h
+ 847C 848A77895C8E              db      084h, 08ah, 077h, 089h, 05ch, 08eh
+ 8482 D18B638D9990              db      0d1h, 08bh, 063h, 08dh, 099h, 090h
+ 8488 928DE88B8E8B              db      092h, 08dh, 0e8h, 08bh, 08eh, 08bh
+ 848E 718B608C408A              db      071h, 08bh, 060h, 08ch, 040h, 08ah
+ 8494 7D8BAC8BD38B              db      07dh, 08bh, 0ach, 08bh, 0d3h, 08bh
+ 849A 828AD495428C              db      082h, 08ah, 0d4h, 095h, 042h, 08ch
+ 84A0 C38ADA957792              db      0c3h, 08ah, 0dah, 095h, 077h, 092h
+ 84A6 23966B9DD38B              db      023h, 096h, 06bh, 09dh, 0d3h, 08bh
+ 84AC 4F9D429D479D              db      04fh, 09dh, 042h, 09dh, 047h, 09dh
+ 84B2 118254055705              db      011h, 082h, 054h, 005h, 057h, 005h
+ 84B8 848CB08AE888              db      084h, 08ch, 0b0h, 08ah, 0e8h, 088h
+ 84BE 2B8BD38BD38B              db      02bh, 08bh, 0d3h, 08bh, 0d3h, 08bh
+ 84C4 E086790D9A79              db      0e0h, 086h, 079h, 00dh, 09ah, 079h
+ 84CA 41967C7F977C              db      041h, 096h, 07ch, 07fh, 097h, 07ch
+ 84D0 E0977F2E9B50              db      0e0h, 097h, 07fh, 02eh, 09bh, 050h
+ 84D6 F28F46F18F4E              db      0f2h, 08fh, 046h, 0f1h, 08fh, 04eh
+ 84DC 46534E52474F              db      046h, 053h, 04eh, 052h, 047h, 04fh
+ 84E2 4446434F564F              db      044h, 046h, 043h, 04fh, 056h, 04fh
+ 84E8 4D554C425344              db      04dh, 055h, 04ch, 042h, 053h, 044h
+ 84EE 442F30494454              db      044h, 02fh, 030h, 049h, 044h, 054h
+ 84F4 4D4F534C5353              db      04dh, 04fh, 053h, 04ch, 053h, 053h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE   8
+
+
+ 84FA 54434E55464D              db      054h, 043h, 04eh, 055h, 046h, 04dh
+ 8500 4F4858424EC3              db      04fh, 048h, 058h, 042h, 04eh, 0c3h
+ 8506 9582C3018BD3              db      095h, 082h, 0c3h, 001h, 08bh, 0d3h
+ 850C 00C9D6006F7C              db      000h, 0c9h, 0d6h, 000h, 06fh, 07ch
+ 8512 DE006778DE00              db      0deh, 000h, 067h, 078h, 0deh, 000h
+ 8518 473E00C90000              db      047h, 03eh, 000h, 0c9h, 000h, 000h
+ 851E 00354ACA9939              db      000h, 035h, 04ah, 0cah, 099h, 039h
+ 8524 1C76982295B3              db      01ch, 076h, 098h, 022h, 095h, 0b3h
+ 852A 980ADD479853              db      098h, 00ah, 0ddh, 047h, 098h, 053h
+ 8530 D199990A1A9F              db      0d1h, 099h, 099h, 00ah, 01ah, 09fh
+ 8536 9865BCCD98D6              db      098h, 065h, 0bch, 0cdh, 098h, 0d6h
+ 853C 773E9852C74F              db      077h, 03eh, 098h, 052h, 0c7h, 04fh
+ 8542 80DB00C901FF              db      080h, 0dbh, 000h, 0c9h, 001h, 0ffh
+ 8548 1C0000140014              db      01ch, 000h, 000h, 014h, 000h, 014h
+ 854E 0000000000C3              db      000h, 000h, 000h, 000h, 000h, 0c3h
+ 8554 1988C30000C3              db      019h, 088h, 0c3h, 000h, 000h, 0c3h
+ 855A 0000C300005D              db      000h, 000h, 0c3h, 000h, 000h, 05dh
+ 8560 06FEFFFA0520              db      006h, 0feh, 0ffh, 0fah, 005h, 020h
+ 8566 4572726F7200              db      045h, 072h, 072h, 06fh, 072h, 000h
+ 856C 20696E20004F              db      020h, 069h, 06eh, 020h, 000h, 04fh
+ 8572 6B0D0A000042              db      06bh, 00dh, 00ah, 000h, 000h, 042h
+ 8578 7265616B0021              db      072h, 065h, 061h, 06bh, 000h, 021h
+ 857E 0400397E23FE              db      004h, 000h, 039h, 07eh, 023h, 0feh
+ 8584 81C04E234623              db      081h, 0c0h, 04eh, 023h, 046h, 023h
+ 858A E569607AB3EB              db      0e5h, 069h, 060h, 07ah, 0b3h, 0ebh
+ 8590 CA9785EBCD9C              db      0cah, 097h, 085h, 0ebh, 0cdh, 09ch
+ 8596 88010D00E1C8              db      088h, 001h, 00dh, 000h, 0e1h, 0c8h
+ 859C 09C38185CDBA              db      009h, 0c3h, 081h, 085h, 0cdh, 0bah
+ 85A2 85C5E3C1CD9C              db      085h, 0c5h, 0e3h, 0c1h, 0cdh, 09ch
+ 85A8 887E02C80B2B              db      088h, 07eh, 002h, 0c8h, 00bh, 02bh
+ 85AE C3A685E52ADA              db      0c3h, 0a6h, 085h, 0e5h, 02ah, 0dah
+ 85B4 05060009093E              db      005h, 006h, 000h, 009h, 009h, 03eh
+ 85BA E53ED0956F3E              db      0e5h, 03eh, 0d0h, 095h, 06fh, 03eh
+ 85C0 FF9CDAC98567              db      0ffh, 09ch, 0dah, 0c9h, 085h, 067h
+ 85C6 39E1D81E0CC3              db      039h, 0e1h, 0d8h, 01eh, 00ch, 0c3h
+ 85CC E8852AC90522              db      0e8h, 085h, 02ah, 0c9h, 005h, 022h
+ 85D2 5C051E02011E              db      05ch, 005h, 01eh, 002h, 001h, 01eh
+ 85D8 14011E00011E              db      014h, 001h, 01eh, 000h, 001h, 01eh
+ 85DE 12011E22011E              db      012h, 001h, 01eh, 022h, 001h, 01eh
+ 85E4 0A011E18CD06              db      00ah, 001h, 01eh, 018h, 0cdh, 006h
+ 85EA 87324505CDD5              db      087h, 032h, 045h, 005h, 0cdh, 0d5h
+ 85F0 8C21DB84573E              db      08ch, 021h, 0dbh, 084h, 057h, 03eh
+ 85F6 3FCDAD88197E              db      03fh, 0cdh, 0adh, 088h, 019h, 07eh
+ 85FC CDAD88CD308A              db      0cdh, 0adh, 088h, 0cdh, 030h, 08ah
+ 8602 CDAD88216585              db      0cdh, 0adh, 088h, 021h, 065h, 085h
+ 8608 CD81932A5C05              db      0cdh, 081h, 093h, 02ah, 05ch, 005h
+ 860E 11FEFFCD9C88              db      011h, 0feh, 0ffh, 0cdh, 09ch, 088h
+ 8614 CA27827CA53C              db      0cah, 027h, 082h, 07ch, 0a5h, 03ch
+ 861A C41E9A3EC1AF              db      0c4h, 01eh, 09ah, 03eh, 0c1h, 0afh
+ 8620 324505CDD58C              db      032h, 045h, 005h, 0cdh, 0d5h, 08ch
+ 8626 217185CD8193              db      021h, 071h, 085h, 0cdh, 081h, 093h
+ 862C 21FFFF225C05              db      021h, 0ffh, 0ffh, 022h, 05ch, 005h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE   9
+
+
+ 8632 CD1988DA2C86              db      0cdh, 019h, 088h, 0dah, 02ch, 086h
+ 8638 CD308A3C3DCA              db      0cdh, 030h, 08ah, 03ch, 03dh, 0cah
+ 863E 2C86F5CD068B              db      02ch, 086h, 0f5h, 0cdh, 006h, 08bh
+ 8644 D5CD308747D1              db      0d5h, 0cdh, 030h, 087h, 047h, 0d1h
+ 864A F1D2108AD5C5              db      0f1h, 0d2h, 010h, 08ah, 0d5h, 0c5h
+ 8650 AF32CC05CD30              db      0afh, 032h, 0cch, 005h, 0cdh, 030h
+ 8656 8AB7F5CDC086              db      08ah, 0b7h, 0f5h, 0cdh, 0c0h, 086h
+ 865C DA6586F1F5CA              db      0dah, 065h, 086h, 0f1h, 0f5h, 0cah
+ 8662 A78BB7C5D27C              db      0a7h, 08bh, 0b7h, 0c5h, 0d2h, 07ch
+ 8668 86EB2AD6051A              db      086h, 0ebh, 02ah, 0d6h, 005h, 01ah
+ 866E 020313CD9C88              db      002h, 003h, 013h, 0cdh, 09ch, 088h
+ 8674 C26D86606922              db      0c2h, 06dh, 086h, 060h, 069h, 022h
+ 867A D605D1F1CAA3              db      0d6h, 005h, 0d1h, 0f1h, 0cah, 0a3h
+ 8680 862AD605E3C1              db      086h, 02ah, 0d6h, 005h, 0e3h, 0c1h
+ 8686 09E5CDA085E1              db      009h, 0e5h, 0cdh, 0a0h, 085h, 0e1h
+ 868C 22D605EB74D1              db      022h, 0d6h, 005h, 0ebh, 074h, 0d1h
+ 8692 232373237223              db      023h, 023h, 073h, 023h, 072h, 023h
+ 8698 1161051A7723              db      011h, 061h, 005h, 01ah, 077h, 023h
+ 869E 13B7C29B86CD              db      013h, 0b7h, 0c2h, 09bh, 086h, 0cdh
+ 86A4 EC8623EB626B              db      0ech, 086h, 023h, 0ebh, 062h, 06bh
+ 86AA 7E23B6CA2C86              db      07eh, 023h, 0b6h, 0cah, 02ch, 086h
+ 86B0 232323AFBE23              db      023h, 023h, 023h, 0afh, 0beh, 023h
+ 86B6 C2B486EB7323              db      0c2h, 0b4h, 086h, 0ebh, 073h, 023h
+ 86BC 72C3A8862A5E              db      072h, 0c3h, 0a8h, 086h, 02ah, 05eh
+ 86C2 05444D7E23B6              db      005h, 044h, 04dh, 07eh, 023h, 0b6h
+ 86C8 2BC823237E23              db      02bh, 0c8h, 023h, 023h, 07eh, 023h
+ 86CE 666FCD9C8860              db      066h, 06fh, 0cdh, 09ch, 088h, 060h
+ 86D4 697E23666F3F              db      069h, 07eh, 023h, 066h, 06fh, 03fh
+ 86DA C83FD0C3C386              db      0c8h, 03fh, 0d0h, 0c3h, 0c3h, 086h
+ 86E0 C02A5E05AF77              db      0c0h, 02ah, 05eh, 005h, 0afh, 077h
+ 86E6 23772322D605              db      023h, 077h, 023h, 022h, 0d6h, 005h
+ 86EC 2A5E052B22CE              db      02ah, 05eh, 005h, 02bh, 022h, 0ceh
+ 86F2 052AAF0522C3              db      005h, 02ah, 0afh, 005h, 022h, 0c3h
+ 86F8 05AFCD408A2A              db      005h, 0afh, 0cdh, 040h, 08ah, 02ah
+ 86FE D60522D80522              db      0d6h, 005h, 022h, 0d8h, 005h, 022h
+ 8704 DA05C12A5A05              db      0dah, 005h, 0c1h, 02ah, 05ah, 005h
+ 870A F921B30522B1              db      0f9h, 021h, 0b3h, 005h, 022h, 0b1h
+ 8710 05AF6F6722D4              db      005h, 0afh, 06fh, 067h, 022h, 0d4h
+ 8716 0532CB0522DE              db      005h, 032h, 0cbh, 005h, 022h, 0deh
+ 871C 05E5C52ACE05              db      005h, 0e5h, 0c5h, 02ah, 0ceh, 005h
+ 8722 C93E3FCDAD88              db      0c9h, 03eh, 03fh, 0cdh, 0adh, 088h
+ 8728 3E20CDAD88C3              db      03eh, 020h, 0cdh, 0adh, 088h, 0c3h
+ 872E 4E05AF32AE05              db      04eh, 005h, 0afh, 032h, 0aeh, 005h
+ 8734 0E051161057E              db      00eh, 005h, 011h, 061h, 005h, 07eh
+ 873A FE20CAB88747              db      0feh, 020h, 0cah, 0b8h, 087h, 047h
+ 8740 FE22CAD887B7              db      0feh, 022h, 0cah, 0d8h, 087h, 0b7h
+ 8746 CADF873AAE05              db      0cah, 0dfh, 087h, 03ah, 0aeh, 005h
+ 874C B77EC2B887FE              db      0b7h, 07eh, 0c2h, 0b8h, 087h, 0feh
+ 8752 3F3E9ECAB887              db      03fh, 03eh, 09eh, 0cah, 0b8h, 087h
+ 8758 7EFE30DA6387              db      07eh, 0feh, 030h, 0dah, 063h, 087h
+ 875E FE3CDAB887D5              db      0feh, 03ch, 0dah, 0b8h, 087h, 0d5h
+ 8764 115C83C501B4              db      011h, 05ch, 083h, 0c5h, 001h, 0b4h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  10
+
+
+ 876A 87C5067F7EFE              db      087h, 0c5h, 006h, 07fh, 07eh, 0feh
+ 8770 61DA7C87FE7B              db      061h, 0dah, 07ch, 087h, 0feh, 07bh
+ 8776 D27C87E65F77              db      0d2h, 07ch, 087h, 0e6h, 05fh, 077h
+ 877C 4EEB23B6F27E              db      04eh, 0ebh, 023h, 0b6h, 0f2h, 07eh
+ 8782 87047EE67FC8              db      087h, 004h, 07eh, 0e6h, 07fh, 0c8h
+ 8788 B9C27E87EBE5              db      0b9h, 0c2h, 07eh, 087h, 0ebh, 0e5h
+ 878E 131AB7FAB087              db      013h, 01ah, 0b7h, 0fah, 0b0h, 087h
+ 8794 4F78FE88C29F              db      04fh, 078h, 0feh, 088h, 0c2h, 09fh
+ 879A 87CD308A2B23              db      087h, 0cdh, 030h, 08ah, 02bh, 023h
+ 87A0 7EFE61DAA887              db      07eh, 0feh, 061h, 0dah, 0a8h, 087h
+ 87A6 E65FB9CA8E87              db      0e6h, 05fh, 0b9h, 0cah, 08eh, 087h
+ 87AC E1C37C8748F1              db      0e1h, 0c3h, 07ch, 087h, 048h, 0f1h
+ 87B2 EBC9EB79C1D1              db      0ebh, 0c9h, 0ebh, 079h, 0c1h, 0d1h
+ 87B8 2312130CD63A              db      023h, 012h, 013h, 00ch, 0d6h, 03ah
+ 87BE CAC687FE49C2              db      0cah, 0c6h, 087h, 0feh, 049h, 0c2h
+ 87C4 C98732AE05D6              db      0c9h, 087h, 032h, 0aeh, 005h, 0d6h
+ 87CA 54C23987477E              db      054h, 0c2h, 039h, 087h, 047h, 07eh
+ 87D0 B7CADF87B8CA              db      0b7h, 0cah, 0dfh, 087h, 0b8h, 0cah
+ 87D6 B88723120C13              db      0b8h, 087h, 023h, 012h, 00ch, 013h
+ 87DC C3CF87216005              db      0c3h, 0cfh, 087h, 021h, 060h, 005h
+ 87E2 1213121312C9              db      012h, 013h, 012h, 013h, 012h, 0c9h
+ 87E8 3A4405B73E00              db      03ah, 044h, 005h, 0b7h, 03eh, 000h
+ 87EE 324405C2FC87              db      032h, 044h, 005h, 0c2h, 0fch, 087h
+ 87F4 05CA1988CDAD              db      005h, 0cah, 019h, 088h, 0cdh, 0adh
+ 87FA 883E052BCA10              db      088h, 03eh, 005h, 02bh, 0cah, 010h
+ 8800 887ECDAD88C3              db      088h, 07eh, 0cdh, 0adh, 088h, 0c3h
+ 8806 2288052BCDAD              db      022h, 088h, 005h, 02bh, 0cdh, 0adh
+ 880C 88C22288CDAD              db      088h, 0c2h, 022h, 088h, 0cdh, 0adh
+ 8812 88CDE28CC319              db      088h, 0cdh, 0e2h, 08ch, 0c3h, 019h
+ 8818 882161050601              db      088h, 021h, 061h, 005h, 006h, 001h
+ 881E AF324405CDD7              db      0afh, 032h, 044h, 005h, 0cdh, 0d7h
+ 8824 884FFE7FCAE8              db      088h, 04fh, 0feh, 07fh, 0cah, 0e8h
+ 882A 873A4405B7CA              db      087h, 03ah, 044h, 005h, 0b7h, 0cah
+ 8830 3B883E00CDAD              db      03bh, 088h, 03eh, 000h, 0cdh, 0adh
+ 8836 88AF32440579              db      088h, 0afh, 032h, 044h, 005h, 079h
+ 883C FE07CA7F88FE              db      0feh, 007h, 0cah, 07fh, 088h, 0feh
+ 8842 03CCE28C37C8              db      003h, 0cch, 0e2h, 08ch, 037h, 0c8h
+ 8848 FE0DCADD8CFE              db      0feh, 00dh, 0cah, 0ddh, 08ch, 0feh
+ 884E 15CA1388FE40              db      015h, 0cah, 013h, 088h, 0feh, 040h
+ 8854 CA1088FE5FCA              db      0cah, 010h, 088h, 0feh, 05fh, 0cah
+ 885A 0888FE08CA08              db      008h, 088h, 0feh, 008h, 0cah, 008h
+ 8860 88FE12C27A88              db      088h, 0feh, 012h, 0c2h, 07ah, 088h
+ 8866 C5D5E53600CD              db      0c5h, 0d5h, 0e5h, 036h, 000h, 0cdh
+ 886C 9C9E216105CD              db      09ch, 09eh, 021h, 061h, 005h, 0cdh
+ 8872 8193E1D1C1C3              db      081h, 093h, 0e1h, 0d1h, 0c1h, 0c3h
+ 8878 2288FE20DA22              db      022h, 088h, 0feh, 020h, 0dah, 022h
+ 887E 8878FE493E07              db      088h, 078h, 0feh, 049h, 03eh, 007h
+ 8884 D29488797132              db      0d2h, 094h, 088h, 079h, 071h, 032h
+ 888A CC052304CDAD              db      0cch, 005h, 023h, 004h, 0cdh, 0adh
+ 8890 88C32288CDAD              db      088h, 0c3h, 022h, 088h, 0cdh, 0adh
+ 8896 883E08C38E88              db      088h, 03eh, 008h, 0c3h, 08eh, 088h
+ 889C 7C92C07D93C9              db      07ch, 092h, 0c0h, 07dh, 093h, 0c9h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  11
+
+
+ 88A2 7EE3BE23E3CA              db      07eh, 0e3h, 0beh, 023h, 0e3h, 0cah
+ 88A8 308AC3D485F5              db      030h, 08ah, 0c3h, 0d4h, 085h, 0f5h
+ 88AE 3A4505B7C2B6              db      03ah, 045h, 005h, 0b7h, 0c2h, 0b6h
+ 88B4 93F1C5F5FE20              db      093h, 0f1h, 0c5h, 0f5h, 0feh, 020h
+ 88BA DAD1883A4205              db      0dah, 0d1h, 088h, 03ah, 042h, 005h
+ 88C0 473AAB0504CA              db      047h, 03ah, 0abh, 005h, 004h, 0cah
+ 88C6 CD8805B8CCE2              db      0cdh, 088h, 005h, 0b8h, 0cch, 0e2h
+ 88CC 8C3C32AB05F1              db      08ch, 03ch, 032h, 0abh, 005h, 0f1h
+ 88D2 C1CD0782C9CD              db      0c1h, 0cdh, 007h, 082h, 0c9h, 0cdh
+ 88D8 0382E67FFE0F              db      003h, 082h, 0e6h, 07fh, 0feh, 00fh
+ 88DE C03A45052F32              db      0c0h, 03ah, 045h, 005h, 02fh, 032h
+ 88E4 4505AFC9CD06              db      045h, 005h, 0afh, 0c9h, 0cdh, 006h
+ 88EA 8BC0C1CDC086              db      08bh, 0c0h, 0c1h, 0cdh, 0c0h, 086h
+ 88F0 C5CD3E89E14E              db      0c5h, 0cdh, 03eh, 089h, 0e1h, 04eh
+ 88F6 23462378B1CA              db      023h, 046h, 023h, 078h, 0b1h, 0cah
+ 88FC 1F86CD4789CD              db      01fh, 086h, 0cdh, 047h, 089h, 0cdh
+ 8902 5B8AC5CDE28C              db      05bh, 08ah, 0c5h, 0cdh, 0e2h, 08ch
+ 8908 5E235623E5EB              db      05eh, 023h, 056h, 023h, 0e5h, 0ebh
+ 890E CD269A3E20E1              db      0cdh, 026h, 09ah, 03eh, 020h, 0e1h
+ 8914 CDAD887EB723              db      0cdh, 0adh, 088h, 07eh, 0b7h, 023h
+ 891A CAF488F21489              db      0cah, 0f4h, 088h, 0f2h, 014h, 089h
+ 8920 D67F4F115D83              db      0d6h, 07fh, 04fh, 011h, 05dh, 083h
+ 8926 1A13B7F22689              db      01ah, 013h, 0b7h, 0f2h, 026h, 089h
+ 892C 0DC22689E67F              db      00dh, 0c2h, 026h, 089h, 0e6h, 07fh
+ 8932 CDAD881A13B7              db      0cdh, 0adh, 088h, 01ah, 013h, 0b7h
+ 8938 F23089C31789              db      0f2h, 030h, 089h, 0c3h, 017h, 089h
+ 893E E52A48052246              db      0e5h, 02ah, 048h, 005h, 022h, 046h
+ 8944 05E1C9E5D52A              db      005h, 0e1h, 0c9h, 0e5h, 0d5h, 02ah
+ 894A 460511FFFF7B              db      046h, 005h, 011h, 0ffh, 0ffh, 07bh
+ 8950 8D6F7A8C6722              db      08dh, 06fh, 07ah, 08ch, 067h, 022h
+ 8956 4605D1E1F0E5              db      046h, 005h, 0d1h, 0e1h, 0f0h, 0e5h
+ 895C 2A4805224605              db      02ah, 048h, 005h, 022h, 046h, 005h
+ 8962 CD0382FE03CA              db      0cdh, 003h, 082h, 0feh, 003h, 0cah
+ 8968 6E89E1C34789              db      06eh, 089h, 0e1h, 0c3h, 047h, 089h
+ 896E 2A4805224605              db      02ah, 048h, 005h, 022h, 046h, 005h
+ 8974 C398823E6432              db      0c3h, 098h, 082h, 03eh, 064h, 032h
+ 897A CB05CDE88BC1              db      0cbh, 005h, 0cdh, 0e8h, 08bh, 0c1h
+ 8980 E5CDD18B22C7              db      0e5h, 0cdh, 0d1h, 08bh, 022h, 0c7h
+ 8986 0521020039CD              db      005h, 021h, 002h, 000h, 039h, 0cdh
+ 898C 8185D1C2A789              db      081h, 085h, 0d1h, 0c2h, 0a7h, 089h
+ 8992 09D52B562B5E              db      009h, 0d5h, 02bh, 056h, 02bh, 05eh
+ 8998 2323E52AC705              db      023h, 023h, 0e5h, 02ah, 0c7h, 005h
+ 899E CD9C88E1C28B              db      0cdh, 09ch, 088h, 0e1h, 0c2h, 08bh
+ 89A4 89D1F9EB0E08              db      089h, 0d1h, 0f9h, 0ebh, 00eh, 008h
+ 89AA CDB185E52AC7              db      0cdh, 0b1h, 085h, 0e5h, 02ah, 0c7h
+ 89B0 05E3E52A5C05              db      005h, 0e3h, 0e5h, 02ah, 05ch, 005h
+ 89B6 E3CDAA8ECDA2              db      0e3h, 0cdh, 0aah, 08eh, 0cdh, 0a2h
+ 89BC 88A6CDA78EE5              db      088h, 0a6h, 0cdh, 0a7h, 08eh, 0e5h
+ 89C2 CDD898E1C5D5              db      0cdh, 0d8h, 098h, 0e1h, 0c5h, 0d5h
+ 89C8 010081515A7E              db      001h, 000h, 081h, 051h, 05ah, 07eh
+ 89CE FEAB3E01C2E3              db      0feh, 0abh, 03eh, 001h, 0c2h, 0e3h
+ 89D4 89CD308ACDA7              db      089h, 0cdh, 030h, 08ah, 0cdh, 0a7h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  12
+
+
+ 89DA 8EE5CDD898CD              db      08eh, 0e5h, 0cdh, 0d8h, 098h, 0cdh
+ 89E0 8C98E1C5D5F5              db      08ch, 098h, 0e1h, 0c5h, 0d5h, 0f5h
+ 89E6 33E52ACE05E3              db      033h, 0e5h, 02ah, 0ceh, 005h, 0e3h
+ 89EC 0681C533CD5B              db      006h, 081h, 0c5h, 033h, 0cdh, 05bh
+ 89F2 8A22CE057EFE              db      08ah, 022h, 0ceh, 005h, 07eh, 0feh
+ 89F8 3ACA108AB7C2              db      03ah, 0cah, 010h, 08ah, 0b7h, 0c2h
+ 89FE D485237E23B6              db      0d4h, 085h, 023h, 07eh, 023h, 0b6h
+ 8A04 CA8C8A235E23              db      0cah, 08ch, 08ah, 023h, 05eh, 023h
+ 8A0A 56EB225C05EB              db      056h, 0ebh, 022h, 05ch, 005h, 0ebh
+ 8A10 CD308A11F089              db      0cdh, 030h, 08ah, 011h, 0f0h, 089h
+ 8A16 D5C8D680DAE8              db      0d5h, 0c8h, 0d6h, 080h, 0dah, 0e8h
+ 8A1C 8BFE25D2D485              db      08bh, 0feh, 025h, 0d2h, 0d4h, 085h
+ 8A22 074F0600EB21              db      007h, 04fh, 006h, 000h, 0ebh, 021h
+ 8A28 7C84094E2346              db      07ch, 084h, 009h, 04eh, 023h, 046h
+ 8A2E C5EB237EFE3A              db      0c5h, 0ebh, 023h, 07eh, 0feh, 03ah
+ 8A34 D0FE20CA308A              db      0d0h, 0feh, 020h, 0cah, 030h, 08ah
+ 8A3A FE303F3C3DC9              db      0feh, 030h, 03fh, 03ch, 03dh, 0c9h
+ 8A40 EB2A5E05CA55              db      0ebh, 02ah, 05eh, 005h, 0cah, 055h
+ 8A46 8AEBCD068BE5              db      08ah, 0ebh, 0cdh, 006h, 08bh, 0e5h
+ 8A4C CDC0866069D1              db      0cdh, 0c0h, 086h, 060h, 069h, 0d1h
+ 8A52 D2A78B2B22DC              db      0d2h, 0a7h, 08bh, 02bh, 022h, 0dch
+ 8A58 05EBC9CD0B82              db      005h, 0ebh, 0c9h, 0cdh, 00bh, 082h
+ 8A5E C8CD0382FE1B              db      0c8h, 0cdh, 003h, 082h, 0feh, 01bh
+ 8A64 CA7D8AFE03CA              db      0cah, 07dh, 08ah, 0feh, 003h, 0cah
+ 8A6A 7D8AFE13C0CD              db      07dh, 08ah, 0feh, 013h, 0c0h, 0cdh
+ 8A70 0382FE11C8FE              db      003h, 082h, 0feh, 011h, 0c8h, 0feh
+ 8A76 03CA828AC36F              db      003h, 0cah, 082h, 08ah, 0c3h, 06fh
+ 8A7C 8A3EFF324D05              db      08ah, 03eh, 0ffh, 032h, 04dh, 005h
+ 8A82 C0F6C022CE05              db      0c0h, 0f6h, 0c0h, 022h, 0ceh, 005h
+ 8A88 21F6FFC12A5C              db      021h, 0f6h, 0ffh, 0c1h, 02ah, 05ch
+ 8A8E 05F57DA43CCA              db      005h, 0f5h, 07dh, 0a4h, 03ch, 0cah
+ 8A94 9F8A22D2052A              db      09fh, 08ah, 022h, 0d2h, 005h, 02ah
+ 8A9A CE0522D405AF              db      0ceh, 005h, 022h, 0d4h, 005h, 0afh
+ 8AA0 324505CDD58C              db      032h, 045h, 005h, 0cdh, 0d5h, 08ch
+ 8AA6 F1217785C208              db      0f1h, 021h, 077h, 085h, 0c2h, 008h
+ 8AAC 86C31F862AD4              db      086h, 0c3h, 01fh, 086h, 02ah, 0d4h
+ 8AB2 057CB51E20CA              db      005h, 07ch, 0b5h, 01eh, 020h, 0cah
+ 8AB8 E885EB2AD205              db      0e8h, 085h, 0ebh, 02ah, 0d2h, 005h
+ 8ABE 225C05EBC9CD              db      022h, 05ch, 005h, 0ebh, 0c9h, 0cdh
+ 8AC4 0B96C0324105              db      00bh, 096h, 0c0h, 032h, 041h, 005h
+ 8ACA C9E52A4A0506              db      0c9h, 0e5h, 02ah, 04ah, 005h, 006h
+ 8AD0 004F09224A05              db      000h, 04fh, 009h, 022h, 04ah, 005h
+ 8AD6 E1C97EFE41D8              db      0e1h, 0c9h, 07eh, 0feh, 041h, 0d8h
+ 8ADC FE5B3FC9CD30              db      0feh, 05bh, 03fh, 0c9h, 0cdh, 030h
+ 8AE2 8ACDA78ECD8C              db      08ah, 0cdh, 0a7h, 08eh, 0cdh, 08ch
+ 8AE8 98FA018B3AE7              db      098h, 0fah, 001h, 08bh, 03ah, 0e7h
+ 8AEE 05FE90DA3499              db      005h, 0feh, 090h, 0dah, 034h, 099h
+ 8AF4 018090110000              db      001h, 080h, 090h, 011h, 000h, 000h
+ 8AFA E5CD0799E151              db      0e5h, 0cdh, 007h, 099h, 0e1h, 051h
+ 8B00 C81E08C3E885              db      0c8h, 01eh, 008h, 0c3h, 0e8h, 085h
+ 8B06 2B110000CD30              db      02bh, 011h, 000h, 000h, 0cdh, 030h
+ 8B0C 8AD0E5F52198              db      08ah, 0d0h, 0e5h, 0f5h, 021h, 098h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  13
+
+
+ 8B12 19CD9C88DAD4              db      019h, 0cdh, 09ch, 088h, 0dah, 0d4h
+ 8B18 85626B192919              db      085h, 062h, 06bh, 019h, 029h, 019h
+ 8B1E 29F1D6305F16              db      029h, 0f1h, 0d6h, 030h, 05fh, 016h
+ 8B24 0019EBE1C30A              db      000h, 019h, 0ebh, 0e1h, 0c3h, 00ah
+ 8B2A 8BCAF086CDE3              db      08bh, 0cah, 0f0h, 086h, 0cdh, 0e3h
+ 8B30 8A2BCD308AE5              db      08ah, 02bh, 0cdh, 030h, 08ah, 0e5h
+ 8B36 2AAF05CA4E8B              db      02ah, 0afh, 005h, 0cah, 04eh, 08bh
+ 8B3C E1CDA2882CD5              db      0e1h, 0cdh, 0a2h, 088h, 02ch, 0d5h
+ 8B42 CDE38A2BCD30              db      0cdh, 0e3h, 08ah, 02bh, 0cdh, 030h
+ 8B48 8AC2D485E3EB              db      08ah, 0c2h, 0d4h, 085h, 0e3h, 0ebh
+ 8B4E 7D935F7C9A57              db      07dh, 093h, 05fh, 07ch, 09ah, 057h
+ 8B54 DAC985E52AD6              db      0dah, 0c9h, 085h, 0e5h, 02ah, 0d6h
+ 8B5A 0501280009CD              db      005h, 001h, 028h, 000h, 009h, 0cdh
+ 8B60 9C88D2C985EB              db      09ch, 088h, 0d2h, 0c9h, 085h, 0ebh
+ 8B66 225A05E122AF              db      022h, 05ah, 005h, 0e1h, 022h, 0afh
+ 8B6C 05E1C3F086CA              db      005h, 0e1h, 0c3h, 0f0h, 086h, 0cah
+ 8B72 EC86CDF08601              db      0ech, 086h, 0cdh, 0f0h, 086h, 001h
+ 8B78 F089C38D8B0E              db      0f0h, 089h, 0c3h, 08dh, 08bh, 00eh
+ 8B7E 03CDB185C1E5              db      003h, 0cdh, 0b1h, 085h, 0c1h, 0e5h
+ 8B84 E52A5C05E33E              db      0e5h, 02ah, 05ch, 005h, 0e3h, 03eh
+ 8B8A 8CF533C5CD06              db      08ch, 0f5h, 033h, 0c5h, 0cdh, 006h
+ 8B90 8BCDD38BE52A              db      08bh, 0cdh, 0d3h, 08bh, 0e5h, 02ah
+ 8B96 5C05CD9C88E1              db      05ch, 005h, 0cdh, 09ch, 088h, 0e1h
+ 8B9C 23DCC386D4C0              db      023h, 0dch, 0c3h, 086h, 0d4h, 0c0h
+ 8BA2 8660692BD81E              db      086h, 060h, 069h, 02bh, 0d8h, 01eh
+ 8BA8 0EC3E885C016              db      00eh, 0c3h, 0e8h, 085h, 0c0h, 016h
+ 8BAE FFCD7D85F9FE              db      0ffh, 0cdh, 07dh, 085h, 0f9h, 0feh
+ 8BB4 8C1E04C2E885              db      08ch, 01eh, 004h, 0c2h, 0e8h, 085h
+ 8BBA E1225C05237C              db      0e1h, 022h, 05ch, 005h, 023h, 07ch
+ 8BC0 B5C2CB8B3ACC              db      0b5h, 0c2h, 0cbh, 08bh, 03ah, 0cch
+ 8BC6 05B7C21E8621              db      005h, 0b7h, 0c2h, 01eh, 086h, 021h
+ 8BCC F089E33EE101              db      0f0h, 089h, 0e3h, 03eh, 0e1h, 001h
+ 8BD2 3A0E00060079              db      03ah, 00eh, 000h, 006h, 000h, 079h
+ 8BD8 48477EB7C8B8              db      048h, 047h, 07eh, 0b7h, 0c8h, 0b8h
+ 8BDE C823FE22CAD7              db      0c8h, 023h, 0feh, 022h, 0cah, 0d7h
+ 8BE4 8BC3DA8BCD9E              db      08bh, 0c3h, 0dah, 08bh, 0cdh, 09eh
+ 8BEA 90CDA288B4D5              db      090h, 0cdh, 0a2h, 088h, 0b4h, 0d5h
+ 8BF0 3AAD05F5CDB9              db      03ah, 0adh, 005h, 0f5h, 0cdh, 0b9h
+ 8BF6 8EF1E322CE05              db      08eh, 0f1h, 0e3h, 022h, 0ceh, 005h
+ 8BFC 1FCDAC8ECA3B              db      01fh, 0cdh, 0ach, 08eh, 0cah, 03bh
+ 8C02 8CE52AE405E5              db      08ch, 0e5h, 02ah, 0e4h, 005h, 0e5h
+ 8C08 23235E23562A              db      023h, 023h, 05eh, 023h, 056h, 02ah
+ 8C0E 5E05CD9C88D2              db      05eh, 005h, 0cdh, 09ch, 088h, 0d2h
+ 8C14 2A8C2A5A05CD              db      02ah, 08ch, 02ah, 05ah, 005h, 0cdh
+ 8C1A 9C88D1D2328C              db      09ch, 088h, 0d1h, 0d2h, 032h, 08ch
+ 8C20 21BF05CD9C88              db      021h, 0bfh, 005h, 0cdh, 09ch, 088h
+ 8C26 D2328C3ED1CD              db      0d2h, 032h, 08ch, 03eh, 0d1h, 0cdh
+ 8C2C E294EBCD1B93              db      0e2h, 094h, 0ebh, 0cdh, 01bh, 093h
+ 8C32 CDE294E1CDE7              db      0cdh, 0e2h, 094h, 0e1h, 0cdh, 0e7h
+ 8C38 98E1C9E5CDE4              db      098h, 0e1h, 0c9h, 0e5h, 0cdh, 0e4h
+ 8C3E 98D1E1C9CD0B              db      098h, 0d1h, 0e1h, 0c9h, 0cdh, 00bh
+ 8C44 967E47FE8CCA              db      096h, 07eh, 047h, 0feh, 08ch, 0cah
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  14
+
+
+ 8C4A 518CCDA28888              db      051h, 08ch, 0cdh, 0a2h, 088h, 088h
+ 8C50 2B4B0D78CA18              db      02bh, 04bh, 00dh, 078h, 0cah, 018h
+ 8C56 8ACD078BFE2C              db      08ah, 0cdh, 007h, 08bh, 0feh, 02ch
+ 8C5C C0C3528CCDB9              db      0c0h, 0c3h, 052h, 08ch, 0cdh, 0b9h
+ 8C62 8E7EFE88CA6E              db      08eh, 07eh, 0feh, 088h, 0cah, 06eh
+ 8C68 8CCDA288A92B              db      08ch, 0cdh, 0a2h, 088h, 0a9h, 02bh
+ 8C6E CDAA8ECD8C98              db      0cdh, 0aah, 08eh, 0cdh, 08ch, 098h
+ 8C74 CAD38BCD308A              db      0cah, 0d3h, 08bh, 0cdh, 030h, 08ah
+ 8C7A DA8E8BC3178A              db      0dah, 08eh, 08bh, 0c3h, 017h, 08ah
+ 8C80 2BCD308ACAE2              db      02bh, 0cdh, 030h, 08ah, 0cah, 0e2h
+ 8C86 8CC8FEA5CA15              db      08ch, 0c8h, 0feh, 0a5h, 0cah, 015h
+ 8C8C 8DFEA8CA158D              db      08dh, 0feh, 0a8h, 0cah, 015h, 08dh
+ 8C92 E5FE2CCAFE8C              db      0e5h, 0feh, 02ch, 0cah, 0feh, 08ch
+ 8C98 FE3BCA388DC1              db      0feh, 03bh, 0cah, 038h, 08dh, 0c1h
+ 8C9E CDB98EE53AAD              db      0cdh, 0b9h, 08eh, 0e5h, 03ah, 0adh
+ 8CA4 05B7C2CE8CCD              db      005h, 0b7h, 0c2h, 0ceh, 08ch, 0cdh
+ 8CAA 319ACD3F9336              db      031h, 09ah, 0cdh, 03fh, 093h, 036h
+ 8CB0 202AE405342A              db      020h, 02ah, 0e4h, 005h, 034h, 02ah
+ 8CB6 E4053A420547              db      0e4h, 005h, 03ah, 042h, 005h, 047h
+ 8CBC 04CACA8C043A              db      004h, 0cah, 0cah, 08ch, 004h, 03ah
+ 8CC2 AB05863DB8D4              db      0abh, 005h, 086h, 03dh, 0b8h, 0d4h
+ 8CC8 E28CCD8493AF              db      0e2h, 08ch, 0cdh, 084h, 093h, 0afh
+ 8CCE C48493E1C380              db      0c4h, 084h, 093h, 0e1h, 0c3h, 080h
+ 8CD4 8C3AAB05B7C8              db      08ch, 03ah, 0abh, 005h, 0b7h, 0c8h
+ 8CDA C3E28C360021              db      0c3h, 0e2h, 08ch, 036h, 000h, 021h
+ 8CE0 60053E0DCDAD              db      060h, 005h, 03eh, 00dh, 0cdh, 0adh
+ 8CE6 883E0ACDAD88              db      088h, 03eh, 00ah, 0cdh, 0adh, 088h
+ 8CEC AF32AB053A41              db      0afh, 032h, 0abh, 005h, 03ah, 041h
+ 8CF2 053DC8F5AFCD              db      005h, 03dh, 0c8h, 0f5h, 0afh, 0cdh
+ 8CF8 AD88F1C3F38C              db      0adh, 088h, 0f1h, 0c3h, 0f3h, 08ch
+ 8CFE 3A4305473AAB              db      03ah, 043h, 005h, 047h, 03ah, 0abh
+ 8D04 05B8D4E28CD2              db      005h, 0b8h, 0d4h, 0e2h, 08ch, 0d2h
+ 8D0A 388DD60ED20C              db      038h, 08dh, 0d6h, 00eh, 0d2h, 00ch
+ 8D10 8D2FC32D8DF5              db      08dh, 02fh, 0c3h, 02dh, 08dh, 0f5h
+ 8D16 CD0896CDA288              db      0cdh, 008h, 096h, 0cdh, 0a2h, 088h
+ 8D1C 292BF1D6A8E5              db      029h, 02bh, 0f1h, 0d6h, 0a8h, 0e5h
+ 8D22 CA288D3AAB05              db      0cah, 028h, 08dh, 03ah, 0abh, 005h
+ 8D28 2F83D2388D3C              db      02fh, 083h, 0d2h, 038h, 08dh, 03ch
+ 8D2E 473E20CDAD88              db      047h, 03eh, 020h, 0cdh, 0adh, 088h
+ 8D34 05C2318DE1CD              db      005h, 0c2h, 031h, 08dh, 0e1h, 0cdh
+ 8D3A 308AC3878C3F              db      030h, 08ah, 0c3h, 087h, 08ch, 03fh
+ 8D40 5265646F2066              db      052h, 065h, 064h, 06fh, 020h, 066h
+ 8D46 726F6D207374              db      072h, 06fh, 06dh, 020h, 073h, 074h
+ 8D4C 6172740D0A00              db      061h, 072h, 074h, 00dh, 00ah, 000h
+ 8D52 3ACD05B7C2CE              db      03ah, 0cdh, 005h, 0b7h, 0c2h, 0ceh
+ 8D58 85C1213F8DCD              db      085h, 0c1h, 021h, 03fh, 08dh, 0cdh
+ 8D5E 8193C31F87CD              db      081h, 093h, 0c3h, 01fh, 087h, 0cdh
+ 8D64 EC927EFE223E              db      0ech, 092h, 07eh, 0feh, 022h, 03eh
+ 8D6A 00324505C27D              db      000h, 032h, 045h, 005h, 0c2h, 07dh
+ 8D70 8DCD4093CDA2              db      08dh, 0cdh, 040h, 093h, 0cdh, 0a2h
+ 8D76 883BE5CD8493              db      088h, 03bh, 0e5h, 0cdh, 084h, 093h
+ 8D7C 3EE5CD2387C1              db      03eh, 0e5h, 0cdh, 023h, 087h, 0c1h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  15
+
+
+ 8D82 DA898A237EB7              db      0dah, 089h, 08ah, 023h, 07eh, 0b7h
+ 8D88 2BC5CAD08B36              db      02bh, 0c5h, 0cah, 0d0h, 08bh, 036h
+ 8D8E 2CC3978DE52A              db      02ch, 0c3h, 097h, 08dh, 0e5h, 02ah
+ 8D94 DC05F6AF32CD              db      0dch, 005h, 0f6h, 0afh, 032h, 0cdh
+ 8D9A 05E3C3A38DCD              db      005h, 0e3h, 0c3h, 0a3h, 08dh, 0cdh
+ 8DA0 A2882CCD9E90              db      0a2h, 088h, 02ch, 0cdh, 09eh, 090h
+ 8DA6 E3D57EFE2CCA              db      0e3h, 0d5h, 07eh, 0feh, 02ch, 0cah
+ 8DAC CB8D3ACD05B7              db      0cbh, 08dh, 03ah, 0cdh, 005h, 0b7h
+ 8DB2 C2388E3E3FCD              db      0c2h, 038h, 08eh, 03eh, 03fh, 0cdh
+ 8DB8 AD88CD2387D1              db      0adh, 088h, 0cdh, 023h, 087h, 0d1h
+ 8DBE C1DA898A237E              db      0c1h, 0dah, 089h, 08ah, 023h, 07eh
+ 8DC4 B72BC5CAD08B              db      0b7h, 02bh, 0c5h, 0cah, 0d0h, 08bh
+ 8DCA D53AAD05B7CA              db      0d5h, 03ah, 0adh, 005h, 0b7h, 0cah
+ 8DD0 F58DCD308A57              db      0f5h, 08dh, 0cdh, 030h, 08ah, 057h
+ 8DD6 47FE22CAE98D              db      047h, 0feh, 022h, 0cah, 0e9h, 08dh
+ 8DDC 3ACD05B757CA              db      03ah, 0cdh, 005h, 0b7h, 057h, 0cah
+ 8DE2 E68D163A062C              db      0e6h, 08dh, 016h, 03ah, 006h, 02ch
+ 8DE8 2BCD4393EB21              db      02bh, 0cdh, 043h, 093h, 0ebh, 021h
+ 8DEE 008EE3D5C303              db      000h, 08eh, 0e3h, 0d5h, 0c3h, 003h
+ 8DF4 8CCD308ACD93              db      08ch, 0cdh, 030h, 08ah, 0cdh, 093h
+ 8DFA 99E3CDE498E1              db      099h, 0e3h, 0cdh, 0e4h, 098h, 0e1h
+ 8E00 2BCD308ACA0C              db      02bh, 0cdh, 030h, 08ah, 0cah, 00ch
+ 8E06 8EFE2CC2528D              db      08eh, 0feh, 02ch, 0c2h, 052h, 08dh
+ 8E0C E32BCD308AC2              db      0e3h, 02bh, 0cdh, 030h, 08ah, 0c2h
+ 8E12 9F8DD13ACD05              db      09fh, 08dh, 0d1h, 03ah, 0cdh, 005h
+ 8E18 B7EBC2568AD5              db      0b7h, 0ebh, 0c2h, 056h, 08ah, 0d5h
+ 8E1E B621278EC481              db      0b6h, 021h, 027h, 08eh, 0c4h, 081h
+ 8E24 93E1C93F4578              db      093h, 0e1h, 0c9h, 03fh, 045h, 078h
+ 8E2A 747261206967              db      074h, 072h, 061h, 020h, 069h, 067h
+ 8E30 6E6F7265640D              db      06eh, 06fh, 072h, 065h, 064h, 00dh
+ 8E36 0A00CDD18BB7              db      00ah, 000h, 0cdh, 0d1h, 08bh, 0b7h
+ 8E3C C2518E237E23              db      0c2h, 051h, 08eh, 023h, 07eh, 023h
+ 8E42 B61E06CAE885              db      0b6h, 01eh, 006h, 0cah, 0e8h, 085h
+ 8E48 235E2356EB22              db      023h, 05eh, 023h, 056h, 0ebh, 022h
+ 8E4E C905EBCD308A              db      0c9h, 005h, 0ebh, 0cdh, 030h, 08ah
+ 8E54 FE83C2388EC3              db      0feh, 083h, 0c2h, 038h, 08eh, 0c3h
+ 8E5A CB8D110000C4              db      0cbh, 08dh, 011h, 000h, 000h, 0c4h
+ 8E60 9E9022CE05CD              db      09eh, 090h, 022h, 0ceh, 005h, 0cdh
+ 8E66 7D85C2DA85F9              db      07dh, 085h, 0c2h, 0dah, 085h, 0f9h
+ 8E6C D57E23F5D5CD              db      0d5h, 07eh, 023h, 0f5h, 0d5h, 0cdh
+ 8E72 CA98E3E5CD37              db      0cah, 098h, 0e3h, 0e5h, 0cdh, 037h
+ 8E78 96E1CDE498E1              db      096h, 0e1h, 0cdh, 0e4h, 098h, 0e1h
+ 8E7E CDDB98E5CD07              db      0cdh, 0dbh, 098h, 0e5h, 0cdh, 007h
+ 8E84 99E1C190CDDB              db      099h, 0e1h, 0c1h, 090h, 0cdh, 0dbh
+ 8E8A 98CA978EEB22              db      098h, 0cah, 097h, 08eh, 0ebh, 022h
+ 8E90 5C056960C3EC              db      05ch, 005h, 069h, 060h, 0c3h, 0ech
+ 8E96 89F92ACE057E              db      089h, 0f9h, 02ah, 0ceh, 005h, 07eh
+ 8E9C FE2CC2F089CD              db      0feh, 02ch, 0c2h, 0f0h, 089h, 0cdh
+ 8EA2 308ACD5F8ECD              db      030h, 08ah, 0cdh, 05fh, 08eh, 0cdh
+ 8EA8 B98EF6373AAD              db      0b9h, 08eh, 0f6h, 037h, 03ah, 0adh
+ 8EAE 058FB7E8C3E6              db      005h, 08fh, 0b7h, 0e8h, 0c3h, 0e6h
+ 8EB4 85CDA288282B              db      085h, 0cdh, 0a2h, 088h, 028h, 02bh
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  16
+
+
+ 8EBA 1600D50E01CD              db      016h, 000h, 0d5h, 00eh, 001h, 0cdh
+ 8EC0 B185CD308F22              db      0b1h, 085h, 0cdh, 030h, 08fh, 022h
+ 8EC6 D0052AD005C1              db      0d0h, 005h, 02ah, 0d0h, 005h, 0c1h
+ 8ECC 78FE78D4AA8E              db      078h, 0feh, 078h, 0d4h, 0aah, 08eh
+ 8ED2 7E1600D6B3DA              db      07eh, 016h, 000h, 0d6h, 0b3h, 0dah
+ 8ED8 F18EFE03D2F1              db      0f1h, 08eh, 0feh, 003h, 0d2h, 0f1h
+ 8EDE 8EFE0117AABA              db      08eh, 0feh, 001h, 017h, 0aah, 0bah
+ 8EE4 57DAD48522C5              db      057h, 0dah, 0d4h, 085h, 022h, 0c5h
+ 8EEA 05CD308AC3D5              db      005h, 0cdh, 030h, 08ah, 0c3h, 0d5h
+ 8EF0 8E7AB7C21990              db      08eh, 07ah, 0b7h, 0c2h, 019h, 090h
+ 8EF6 7E22C505D6AC              db      07eh, 022h, 0c5h, 005h, 0d6h, 0ach
+ 8EFC D8FE07D05F3A              db      0d8h, 0feh, 007h, 0d0h, 05fh, 03ah
+ 8F02 AD053DB37BCA              db      0adh, 005h, 03dh, 0b3h, 07bh, 0cah
+ 8F08 779407835F21              db      077h, 094h, 007h, 083h, 05fh, 021h
+ 8F0E C684197856BA              db      0c6h, 084h, 019h, 078h, 056h, 0bah
+ 8F14 D023CDAA8EC5              db      0d0h, 023h, 0cdh, 0aah, 08eh, 0c5h
+ 8F1A 01C88EC5434A              db      001h, 0c8h, 08eh, 0c5h, 043h, 04ah
+ 8F20 CDBD9858514E              db      0cdh, 0bdh, 098h, 058h, 051h, 04eh
+ 8F26 234623C52AC5              db      023h, 046h, 023h, 0c5h, 02ah, 0c5h
+ 8F2C 05C3BC8EAF32              db      005h, 0c3h, 0bch, 08eh, 0afh, 032h
+ 8F32 AD05CD308A1E              db      0adh, 005h, 0cdh, 030h, 08ah, 01eh
+ 8F38 24CAE885DA93              db      024h, 0cah, 0e8h, 085h, 0dah, 093h
+ 8F3E 99CDD88AD298              db      099h, 0cdh, 0d8h, 08ah, 0d2h, 098h
+ 8F44 8FFE26C25C8F              db      08fh, 0feh, 026h, 0c2h, 05ch, 08fh
+ 8F4A CD308AFE48CA              db      0cdh, 030h, 08ah, 0feh, 048h, 0cah
+ 8F50 DD9DFE42CA59              db      0ddh, 09dh, 0feh, 042h, 0cah, 059h
+ 8F56 9E1E02CAE885              db      09eh, 01eh, 002h, 0cah, 0e8h, 085h
+ 8F5C FEACCA308FFE              db      0feh, 0ach, 0cah, 030h, 08fh, 0feh
+ 8F62 2ECA9399FEAD              db      02eh, 0cah, 093h, 099h, 0feh, 0adh
+ 8F68 CA878FFE22CA              db      0cah, 087h, 08fh, 0feh, 022h, 0cah
+ 8F6E 4093FEAACA79              db      040h, 093h, 0feh, 0aah, 0cah, 079h
+ 8F74 90FEA7CAA492              db      090h, 0feh, 0a7h, 0cah, 0a4h, 092h
+ 8F7A D6B6D2A98FCD              db      0d6h, 0b6h, 0d2h, 0a9h, 08fh, 0cdh
+ 8F80 B58ECDA28829              db      0b5h, 08eh, 0cdh, 0a2h, 088h, 029h
+ 8F86 C9167DCDBC8E              db      0c9h, 016h, 07dh, 0cdh, 0bch, 08eh
+ 8F8C 2AD005E5CDB5              db      02ah, 0d0h, 005h, 0e5h, 0cdh, 0b5h
+ 8F92 98CDAA8EE1C9              db      098h, 0cdh, 0aah, 08eh, 0e1h, 0c9h
+ 8F98 CD9E90E5EB22              db      0cdh, 09eh, 090h, 0e5h, 0ebh, 022h
+ 8F9E E4053AAD05B7              db      0e4h, 005h, 03ah, 0adh, 005h, 0b7h
+ 8FA4 CCCA98E1C906              db      0cch, 0cah, 098h, 0e1h, 0c9h, 006h
+ 8FAA 00074FC5CD30              db      000h, 007h, 04fh, 0c5h, 0cdh, 030h
+ 8FB0 8A79FE31DAD0              db      08ah, 079h, 0feh, 031h, 0dah, 0d0h
+ 8FB6 8FCDB58ECDA2              db      08fh, 0cdh, 0b5h, 08eh, 0cdh, 0a2h
+ 8FBC 882CCDAB8EEB              db      088h, 02ch, 0cdh, 0abh, 08eh, 0ebh
+ 8FC2 2AE405E3E5EB              db      02ah, 0e4h, 005h, 0e3h, 0e5h, 0ebh
+ 8FC8 CD0B96EBE3C3              db      0cdh, 00bh, 096h, 0ebh, 0e3h, 0c3h
+ 8FCE D88FCD7F8FE3              db      0d8h, 08fh, 0cdh, 07fh, 08fh, 0e3h
+ 8FD4 11938FD50125              db      011h, 093h, 08fh, 0d5h, 001h, 025h
+ 8FDA 83094E236669              db      083h, 009h, 04eh, 023h, 066h, 069h
+ 8FE0 E915FEADC8FE              db      0e9h, 015h, 0feh, 0adh, 0c8h, 0feh
+ 8FE6 2DC814FE2BC8              db      02dh, 0c8h, 014h, 0feh, 02bh, 0c8h
+ 8FEC FEACC82BC9F6              db      0feh, 0ach, 0c8h, 02bh, 0c9h, 0f6h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  17
+
+
+ 8FF2 AFF5CDAA8ECD              db      0afh, 0f5h, 0cdh, 0aah, 08eh, 0cdh
+ 8FF8 EC8AF1EBC1E3              db      0ech, 08ah, 0f1h, 0ebh, 0c1h, 0e3h
+ 8FFE EBCDCD98F5CD              db      0ebh, 0cdh, 0cdh, 098h, 0f5h, 0cdh
+ 9004 EC8AF1C17921              db      0ech, 08ah, 0f1h, 0c1h, 079h, 021h
+ 900A 6292C21490A3              db      062h, 092h, 0c2h, 014h, 090h, 0a3h
+ 9010 4F78A2E9B34F              db      04fh, 078h, 0a2h, 0e9h, 0b3h, 04fh
+ 9016 78B2E9212B90              db      078h, 0b2h, 0e9h, 021h, 02bh, 090h
+ 901C 3AAD051F7A17              db      03ah, 0adh, 005h, 01fh, 07ah, 017h
+ 9022 5F166478BAD0              db      05fh, 016h, 064h, 078h, 0bah, 0d0h
+ 9028 C3198F2D9079              db      0c3h, 019h, 08fh, 02dh, 090h, 079h
+ 902E B71FC1D1F5CD              db      0b7h, 01fh, 0c1h, 0d1h, 0f5h, 0cdh
+ 9034 AC8E216F90E5              db      0ach, 08eh, 021h, 06fh, 090h, 0e5h
+ 903A CA0799AF32AD              db      0cah, 007h, 099h, 0afh, 032h, 0adh
+ 9040 05D5CDC4947E              db      005h, 0d5h, 0cdh, 0c4h, 094h, 07eh
+ 9046 23234E2346D1              db      023h, 023h, 04eh, 023h, 046h, 0d1h
+ 904C C5F5CDC894CD              db      0c5h, 0f5h, 0cdh, 0c8h, 094h, 0cdh
+ 9052 DB98F157E17B              db      0dbh, 098h, 0f1h, 057h, 0e1h, 07bh
+ 9058 B2C87AD601D8              db      0b2h, 0c8h, 07ah, 0d6h, 001h, 0d8h
+ 905E AFBB3CD0151D              db      0afh, 0bbh, 03ch, 0d0h, 015h, 01dh
+ 9064 0ABE2303CA57              db      00ah, 0beh, 023h, 003h, 0cah, 057h
+ 906A 903FC397983C              db      090h, 03fh, 0c3h, 097h, 098h, 03ch
+ 9070 8FC1A0C6FF9F              db      08fh, 0c1h, 0a0h, 0c6h, 0ffh, 09fh
+ 9076 C39E98165ACD              db      0c3h, 09eh, 098h, 016h, 05ah, 0cdh
+ 907C BC8ECDAA8ECD              db      0bch, 08eh, 0cdh, 0aah, 08eh, 0cdh
+ 9082 EC8A7B2F4F7A              db      0ech, 08ah, 07bh, 02fh, 04fh, 07ah
+ 9088 2FCD6292C1C3              db      02fh, 0cdh, 062h, 092h, 0c1h, 0c3h
+ 908E C88E2BCD308A              db      0c8h, 08eh, 02bh, 0cdh, 030h, 08ah
+ 9094 C8CDA2882C01              db      0c8h, 0cdh, 0a2h, 088h, 02ch, 001h
+ 909A 9090C5F6AF32              db      090h, 090h, 0c5h, 0f6h, 0afh, 032h
+ 90A0 AC0546CDD88A              db      0ach, 005h, 046h, 0cdh, 0d8h, 08ah
+ 90A6 DAD485AF4F32              db      0dah, 0d4h, 085h, 0afh, 04fh, 032h
+ 90AC AD05CD308ADA              db      0adh, 005h, 0cdh, 030h, 08ah, 0dah
+ 90B2 BA90CDD88ADA              db      0bah, 090h, 0cdh, 0d8h, 08ah, 0dah
+ 90B8 C7904FCD308A              db      0c7h, 090h, 04fh, 0cdh, 030h, 08ah
+ 90BE DABB90CDD88A              db      0dah, 0bbh, 090h, 0cdh, 0d8h, 08ah
+ 90C4 D2BB90D624C2              db      0d2h, 0bbh, 090h, 0d6h, 024h, 0c2h
+ 90CA D6903C32AD05              db      0d6h, 090h, 03ch, 032h, 0adh, 005h
+ 90D0 0F814FCD308A              db      00fh, 081h, 04fh, 0cdh, 030h, 08ah
+ 90D6 3ACB053DCA83              db      03ah, 0cbh, 005h, 03dh, 0cah, 083h
+ 90DC 91F2E6907ED6              db      091h, 0f2h, 0e6h, 090h, 07eh, 0d6h
+ 90E2 28CA5B91AF32              db      028h, 0cah, 05bh, 091h, 0afh, 032h
+ 90E8 CB05E550592A              db      0cbh, 005h, 0e5h, 050h, 059h, 02ah
+ 90EE DE05CD9C8811              db      0deh, 005h, 0cdh, 09ch, 088h, 011h
+ 90F4 E005CACD972A              db      0e0h, 005h, 0cah, 0cdh, 097h, 02ah
+ 90FA D805EB2AD605              db      0d8h, 005h, 0ebh, 02ah, 0d6h, 005h
+ 9100 CD9C88CA1991              db      0cdh, 09ch, 088h, 0cah, 019h, 091h
+ 9106 799623C20E91              db      079h, 096h, 023h, 0c2h, 00eh, 091h
+ 910C 789623CA4D91              db      078h, 096h, 023h, 0cah, 04dh, 091h
+ 9112 23232323C300              db      023h, 023h, 023h, 023h, 0c3h, 000h
+ 9118 91E1E3D5119B              db      091h, 0e1h, 0e3h, 0d5h, 011h, 09bh
+ 911E 8FCD9C88D1CA              db      08fh, 0cdh, 09ch, 088h, 0d1h, 0cah
+ 9124 5091E3E5C501              db      050h, 091h, 0e3h, 0e5h, 0c5h, 001h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  18
+
+
+ 912A 06002ADA05E5              db      006h, 000h, 02ah, 0dah, 005h, 0e5h
+ 9130 09C1E5CDA085              db      009h, 0c1h, 0e5h, 0cdh, 0a0h, 085h
+ 9136 E122DA056069              db      0e1h, 022h, 0dah, 005h, 060h, 069h
+ 913C 22D8052B3600              db      022h, 0d8h, 005h, 02bh, 036h, 000h
+ 9142 CD9C88C23F91              db      0cdh, 09ch, 088h, 0c2h, 03fh, 091h
+ 9148 D173237223EB              db      0d1h, 073h, 023h, 072h, 023h, 0ebh
+ 914E E1C932E70521              db      0e1h, 0c9h, 032h, 0e7h, 005h, 021h
+ 9154 708522E405E1              db      070h, 085h, 022h, 0e4h, 005h, 0e1h
+ 915A C9E52AAC05E3              db      0c9h, 0e5h, 02ah, 0ach, 005h, 0e3h
+ 9160 57D5C5CDE08A              db      057h, 0d5h, 0c5h, 0cdh, 0e0h, 08ah
+ 9166 C1F1EBE3E5EB              db      0c1h, 0f1h, 0ebh, 0e3h, 0e5h, 0ebh
+ 916C 3C577EFE2CCA              db      03ch, 057h, 07eh, 0feh, 02ch, 0cah
+ 9172 6191CDA28829              db      061h, 091h, 0cdh, 0a2h, 088h, 029h
+ 9178 22D005E122AC              db      022h, 0d0h, 005h, 0e1h, 022h, 0ach
+ 917E 051E00D511E5              db      005h, 01eh, 000h, 0d5h, 011h, 0e5h
+ 9184 F52AD8053E19              db      0f5h, 02ah, 0d8h, 005h, 03eh, 019h
+ 918A EB2ADA05EBCD              db      0ebh, 02ah, 0dah, 005h, 0ebh, 0cdh
+ 9190 9C88CABB917E              db      09ch, 088h, 0cah, 0bbh, 091h, 07eh
+ 9196 B923C29D917E              db      0b9h, 023h, 0c2h, 09dh, 091h, 07eh
+ 919C B8235E235623              db      0b8h, 023h, 05eh, 023h, 056h, 023h
+ 91A2 C289913AAC05              db      0c2h, 089h, 091h, 03ah, 0ach, 005h
+ 91A8 B7C2DD85F144              db      0b7h, 0c2h, 0ddh, 085h, 0f1h, 044h
+ 91AE 4DCACD9796CA              db      04dh, 0cah, 0cdh, 097h, 096h, 0cah
+ 91B4 19921E10C3E8              db      019h, 092h, 01eh, 010h, 0c3h, 0e8h
+ 91BA 85110400F1CA              db      085h, 011h, 004h, 000h, 0f1h, 0cah
+ 91C0 018B71237023              db      001h, 08bh, 071h, 023h, 070h, 023h
+ 91C6 4FCDB1852323              db      04fh, 0cdh, 0b1h, 085h, 023h, 023h
+ 91CC 22C50571233A              db      022h, 0c5h, 005h, 071h, 023h, 03ah
+ 91D2 AC051779010B              db      0ach, 005h, 017h, 079h, 001h, 00bh
+ 91D8 00D2DE91C103              db      000h, 0d2h, 0deh, 091h, 0c1h, 003h
+ 91DE 71237023F5E5              db      071h, 023h, 070h, 023h, 0f5h, 0e5h
+ 91E4 CD7899EBE1F1              db      0cdh, 078h, 099h, 0ebh, 0e1h, 0f1h
+ 91EA 3DC2D691F542              db      03dh, 0c2h, 0d6h, 091h, 0f5h, 042h
+ 91F0 4BEB19DAC985              db      04bh, 0ebh, 019h, 0dah, 0c9h, 085h
+ 91F6 CDBA8522DA05              db      0cdh, 0bah, 085h, 022h, 0dah, 005h
+ 91FC 2B3600CD9C88              db      02bh, 036h, 000h, 0cdh, 09ch, 088h
+ 9202 C2FC9103572A              db      0c2h, 0fch, 091h, 003h, 057h, 02ah
+ 9208 C5055EEB2909              db      0c5h, 005h, 05eh, 0ebh, 029h, 009h
+ 920E EB2B2B732372              db      0ebh, 02bh, 02bh, 073h, 023h, 072h
+ 9214 23F1DA3D9247              db      023h, 0f1h, 0dah, 03dh, 092h, 047h
+ 921A 4F7E2316E15E              db      04fh, 07eh, 023h, 016h, 0e1h, 05eh
+ 9220 235623E3F5CD              db      023h, 056h, 023h, 0e3h, 0f5h, 0cdh
+ 9226 9C88D2B691E5              db      09ch, 088h, 0d2h, 0b6h, 091h, 0e5h
+ 922C CD7899D119F1              db      0cdh, 078h, 099h, 0d1h, 019h, 0f1h
+ 9232 3D444DC21E92              db      03dh, 044h, 04dh, 0c2h, 01eh, 092h
+ 9238 2929C109EB2A              db      029h, 029h, 0c1h, 009h, 0ebh, 02ah
+ 923E D005C92ADA05              db      0d0h, 005h, 0c9h, 02ah, 0dah, 005h
+ 9244 EB210000393A              db      0ebh, 021h, 000h, 000h, 039h, 03ah
+ 924A AD05B7CA5D92              db      0adh, 005h, 0b7h, 0cah, 05dh, 092h
+ 9250 CDC494CDC493              db      0cdh, 0c4h, 094h, 0cdh, 0c4h, 093h
+ 9256 2A5A05EB2AC3              db      02ah, 05ah, 005h, 0ebh, 02ah, 0c3h
+ 925C 057D934F7C9A              db      005h, 07dh, 093h, 04fh, 07ch, 09ah
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  19
+
+
+ 9262 41501E0021AD              db      041h, 050h, 01eh, 000h, 021h, 0adh
+ 9268 05730690C3A3              db      005h, 073h, 006h, 090h, 0c3h, 0a3h
+ 926E 983AAB0547AF              db      098h, 03ah, 0abh, 005h, 047h, 0afh
+ 9274 C36392CDFA92              db      0c3h, 063h, 092h, 0cdh, 0fah, 092h
+ 927A CDEC9201D18B              db      0cdh, 0ech, 092h, 001h, 0d1h, 08bh
+ 9280 C5D5CDA28828              db      0c5h, 0d5h, 0cdh, 0a2h, 088h, 028h
+ 9286 CD9E90E5EB2B              db      0cdh, 09eh, 090h, 0e5h, 0ebh, 02bh
+ 928C 562B5EE1CDAA              db      056h, 02bh, 05eh, 0e1h, 0cdh, 0aah
+ 9292 8ECDA28829CD              db      08eh, 0cdh, 0a2h, 088h, 029h, 0cdh
+ 9298 A288B4444DE3              db      0a2h, 088h, 0b4h, 044h, 04dh, 0e3h
+ 929E 712370C33993              db      071h, 023h, 070h, 0c3h, 039h, 093h
+ 92A4 CDFA92D5CD7F              db      0cdh, 0fah, 092h, 0d5h, 0cdh, 07fh
+ 92AA 8FCDAA8EE35E              db      08fh, 0cdh, 0aah, 08eh, 0e3h, 05eh
+ 92B0 2356237AB3CA              db      023h, 056h, 023h, 07ah, 0b3h, 0cah
+ 92B6 E0857E23666F              db      0e0h, 085h, 07eh, 023h, 066h, 06fh
+ 92BC E52ADE05E322              db      0e5h, 02ah, 0deh, 005h, 0e3h, 022h
+ 92C2 DE052AE205E5              db      0deh, 005h, 02ah, 0e2h, 005h, 0e5h
+ 92C8 2AE005E521E0              db      02ah, 0e0h, 005h, 0e5h, 021h, 0e0h
+ 92CE 05D5CDE498E1              db      005h, 0d5h, 0cdh, 0e4h, 098h, 0e1h
+ 92D4 CDA78E2BCD30              db      0cdh, 0a7h, 08eh, 02bh, 0cdh, 030h
+ 92DA 8AC2D485E122              db      08ah, 0c2h, 0d4h, 085h, 0e1h, 022h
+ 92E0 E005E122E205              db      0e0h, 005h, 0e1h, 022h, 0e2h, 005h
+ 92E6 E122DE05E1C9              db      0e1h, 022h, 0deh, 005h, 0e1h, 0c9h
+ 92EC E52A5C05237C              db      0e5h, 02ah, 05ch, 005h, 023h, 07ch
+ 92F2 B5E1C01E16C3              db      0b5h, 0e1h, 0c0h, 01eh, 016h, 0c3h
+ 92F8 E885CDA288A7              db      0e8h, 085h, 0cdh, 0a2h, 088h, 0a7h
+ 92FE 3E8032CB05B6              db      03eh, 080h, 032h, 0cbh, 005h, 0b6h
+ 9304 47CDA390C3AA              db      047h, 0cdh, 0a3h, 090h, 0c3h, 0aah
+ 930A 8ECDAA8ECD31              db      08eh, 0cdh, 0aah, 08eh, 0cdh, 031h
+ 9310 9ACD3F93CDC4              db      09ah, 0cdh, 03fh, 093h, 0cdh, 0c4h
+ 9316 94011F95C57E              db      094h, 001h, 01fh, 095h, 0c5h, 07eh
+ 931C 2323E5CD9A93              db      023h, 023h, 0e5h, 0cdh, 09ah, 093h
+ 9322 E14E2346CD33              db      0e1h, 04eh, 023h, 046h, 0cdh, 033h
+ 9328 93E56FCDB794              db      093h, 0e5h, 06fh, 0cdh, 0b7h, 094h
+ 932E D1C9CD9A9321              db      0d1h, 0c9h, 0cdh, 09ah, 093h, 021h
+ 9334 BF05E5772323              db      0bfh, 005h, 0e5h, 077h, 023h, 023h
+ 933A 732372E1C92B              db      073h, 023h, 072h, 0e1h, 0c9h, 02bh
+ 9340 062250E50EFF              db      006h, 022h, 050h, 0e5h, 00eh, 0ffh
+ 9346 237E0CB7CA55              db      023h, 07eh, 00ch, 0b7h, 0cah, 055h
+ 934C 93BACA5593B8              db      093h, 0bah, 0cah, 055h, 093h, 0b8h
+ 9352 C24693FE22CC              db      0c2h, 046h, 093h, 0feh, 022h, 0cch
+ 9358 308AE323EB79              db      030h, 08ah, 0e3h, 023h, 0ebh, 079h
+ 935E CD339311BF05              db      0cdh, 033h, 093h, 011h, 0bfh, 005h
+ 9364 2AB10522E405              db      02ah, 0b1h, 005h, 022h, 0e4h, 005h
+ 936A 3E0132AD05CD              db      03eh, 001h, 032h, 0adh, 005h, 0cdh
+ 9370 E798CD9C8822              db      0e7h, 098h, 0cdh, 09ch, 088h, 022h
+ 9376 B105E17EC01E              db      0b1h, 005h, 0e1h, 07eh, 0c0h, 01eh
+ 937C 1EC3E88523CD              db      01eh, 0c3h, 0e8h, 085h, 023h, 0cdh
+ 9382 3F93CDC494CD              db      03fh, 093h, 0cdh, 0c4h, 094h, 0cdh
+ 9388 DB981C1DC80A              db      0dbh, 098h, 01ch, 01dh, 0c8h, 00ah
+ 938E CDAD88FE0DCC              db      0cdh, 0adh, 088h, 0feh, 00dh, 0cch
+ 9394 EC8C03C38B93              db      0ech, 08ch, 003h, 0c3h, 08bh, 093h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  20
+
+
+ 939A B70EF1F52A5A              db      0b7h, 00eh, 0f1h, 0f5h, 02ah, 05ah
+ 93A0 05EB2AC3052F              db      005h, 0ebh, 02ah, 0c3h, 005h, 02fh
+ 93A6 4F06FF0923CD              db      04fh, 006h, 0ffh, 009h, 023h, 0cdh
+ 93AC 9C88DAB89322              db      09ch, 088h, 0dah, 0b8h, 093h, 022h
+ 93B2 C30523EBF1C9              db      0c3h, 005h, 023h, 0ebh, 0f1h, 0c9h
+ 93B8 F11E1ACAE885              db      0f1h, 01eh, 01ah, 0cah, 0e8h, 085h
+ 93BE BFF5019C93C5              db      0bfh, 0f5h, 001h, 09ch, 093h, 0c5h
+ 93C4 2AAF0522C305              db      02ah, 0afh, 005h, 022h, 0c3h, 005h
+ 93CA 210000E52A5A              db      021h, 000h, 000h, 0e5h, 02ah, 05ah
+ 93D0 05E521B305EB              db      005h, 0e5h, 021h, 0b3h, 005h, 0ebh
+ 93D6 2AB105EBCD9C              db      02ah, 0b1h, 005h, 0ebh, 0cdh, 09ch
+ 93DC 8801D593C229              db      088h, 001h, 0d5h, 093h, 0c2h, 029h
+ 93E2 942AD605EB2A              db      094h, 02ah, 0d6h, 005h, 0ebh, 02ah
+ 93E8 D805EBCD9C88              db      0d8h, 005h, 0ebh, 0cdh, 09ch, 088h
+ 93EE CAFC937E2323              db      0cah, 0fch, 093h, 07eh, 023h, 023h
+ 93F4 B7CD2C94C3E6              db      0b7h, 0cdh, 02ch, 094h, 0c3h, 0e6h
+ 93FA 93C1EB2ADA05              db      093h, 0c1h, 0ebh, 02ah, 0dah, 005h
+ 9400 EBCD9C88CA52              db      0ebh, 0cdh, 09ch, 088h, 0cah, 052h
+ 9406 94CDDB987BE5              db      094h, 0cdh, 0dbh, 098h, 07bh, 0e5h
+ 940C 09B7F2FB9322              db      009h, 0b7h, 0f2h, 0fbh, 093h, 022h
+ 9412 C505E14E0600              db      0c5h, 005h, 0e1h, 04eh, 006h, 000h
+ 9418 090923EB2AC5              db      009h, 009h, 023h, 0ebh, 02ah, 0c5h
+ 941E 05EBCD9C88CA              db      005h, 0ebh, 0cdh, 09ch, 088h, 0cah
+ 9424 FC93011B94C5              db      0fch, 093h, 001h, 01bh, 094h, 0c5h
+ 942A F6807E23235E              db      0f6h, 080h, 07eh, 023h, 023h, 05eh
+ 9430 235623F0B7C8              db      023h, 056h, 023h, 0f0h, 0b7h, 0c8h
+ 9436 444D2AC305CD              db      044h, 04dh, 02ah, 0c3h, 005h, 0cdh
+ 943C 9C886069D8E1              db      09ch, 088h, 060h, 069h, 0d8h, 0e1h
+ 9442 E3CD9C88E3E5              db      0e3h, 0cdh, 09ch, 088h, 0e3h, 0e5h
+ 9448 6069D0C1F1F1              db      060h, 069h, 0d0h, 0c1h, 0f1h, 0f1h
+ 944E E5D5C5C9D1E1              db      0e5h, 0d5h, 0c5h, 0c9h, 0d1h, 0e1h
+ 9454 7DB4C82B462B              db      07dh, 0b4h, 0c8h, 02bh, 046h, 02bh
+ 945A 4EE52B2B6E26              db      04eh, 0e5h, 02bh, 02bh, 06eh, 026h
+ 9460 000950592B44              db      000h, 009h, 050h, 059h, 02bh, 044h
+ 9466 4D2AC305CDA3              db      04dh, 02ah, 0c3h, 005h, 0cdh, 0a3h
+ 946C 85E171237069              db      085h, 0e1h, 071h, 023h, 070h, 069h
+ 9472 602BC3C793C5              db      060h, 02bh, 0c3h, 0c7h, 093h, 0c5h
+ 9478 E52AE405E3CD              db      0e5h, 02ah, 0e4h, 005h, 0e3h, 0cdh
+ 947E 308FE3CDAB8E              db      030h, 08fh, 0e3h, 0cdh, 0abh, 08eh
+ 9484 7EE52AE405E5              db      07eh, 0e5h, 02ah, 0e4h, 005h, 0e5h
+ 948A 861E1CDAE885              db      086h, 01eh, 01ch, 0dah, 0e8h, 085h
+ 9490 CD3093D1CDC8              db      0cdh, 030h, 093h, 0d1h, 0cdh, 0c8h
+ 9496 94E3CDC794E5              db      094h, 0e3h, 0cdh, 0c7h, 094h, 0e5h
+ 949C 2AC105EBCDAE              db      02ah, 0c1h, 005h, 0ebh, 0cdh, 0aeh
+ 94A2 94CDAE9421C5              db      094h, 0cdh, 0aeh, 094h, 021h, 0c5h
+ 94A8 8EE3E5C36193              db      08eh, 0e3h, 0e5h, 0c3h, 061h, 093h
+ 94AE E1E37E23234E              db      0e1h, 0e3h, 07eh, 023h, 023h, 04eh
+ 94B4 23466F2C2DC8              db      023h, 046h, 06fh, 02ch, 02dh, 0c8h
+ 94BA 0A120313C3B8              db      00ah, 012h, 003h, 013h, 0c3h, 0b8h
+ 94C0 94CDAB8E2AE4              db      094h, 0cdh, 0abh, 08eh, 02ah, 0e4h
+ 94C6 05EBCDE294EB              db      005h, 0ebh, 0cdh, 0e2h, 094h, 0ebh
+ 94CC C0D550591B4E              db      0c0h, 0d5h, 050h, 059h, 01bh, 04eh
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  21
+
+
+ 94D2 2AC305CD9C88              db      02ah, 0c3h, 005h, 0cdh, 09ch, 088h
+ 94D8 C2E094470922              db      0c2h, 0e0h, 094h, 047h, 009h, 022h
+ 94DE C305E1C92AB1              db      0c3h, 005h, 0e1h, 0c9h, 02ah, 0b1h
+ 94E4 052B462B4E2B              db      005h, 02bh, 046h, 02bh, 04eh, 02bh
+ 94EA 2BCD9C88C022              db      02bh, 0cdh, 09ch, 088h, 0c0h, 022h
+ 94F0 B105C9017292              db      0b1h, 005h, 0c9h, 001h, 072h, 092h
+ 94F6 C5CDC194AF57              db      0c5h, 0cdh, 0c1h, 094h, 0afh, 057h
+ 94FC 32AD057EB7C9              db      032h, 0adh, 005h, 07eh, 0b7h, 0c9h
+ 9502 017292C5CDF7              db      001h, 072h, 092h, 0c5h, 0cdh, 0f7h
+ 9508 94CA018B2323              db      094h, 0cah, 001h, 08bh, 023h, 023h
+ 950E 5E23561AC93E              db      05eh, 023h, 056h, 01ah, 0c9h, 03eh
+ 9514 01CD3093CD0E              db      001h, 0cdh, 030h, 093h, 0cdh, 00eh
+ 951A 962AC10573C1              db      096h, 02ah, 0c1h, 005h, 073h, 0c1h
+ 9520 C36193CDBE95              db      0c3h, 061h, 093h, 0cdh, 0beh, 095h
+ 9526 AFE34FE57EB8              db      0afh, 0e3h, 04fh, 0e5h, 07eh, 0b8h
+ 952C DA319578110E              db      0dah, 031h, 095h, 078h, 011h, 00eh
+ 9532 00C5CD9A93C1              db      000h, 0c5h, 0cdh, 09ah, 093h, 0c1h
+ 9538 E1E523234623              db      0e1h, 0e5h, 023h, 023h, 046h, 023h
+ 953E 666806000944              db      066h, 068h, 006h, 000h, 009h, 044h
+ 9544 4DCD33936FCD              db      04dh, 0cdh, 033h, 093h, 06fh, 0cdh
+ 954A B794D1CDC894              db      0b7h, 094h, 0d1h, 0cdh, 0c8h, 094h
+ 9550 C36193CDBE95              db      0c3h, 061h, 093h, 0cdh, 0beh, 095h
+ 9556 D1D51A90C327              db      0d1h, 0d5h, 01ah, 090h, 0c3h, 027h
+ 955C 95EB7ECDC395              db      095h, 0ebh, 07eh, 0cdh, 0c3h, 095h
+ 9562 0405CA018BC5              db      004h, 005h, 0cah, 001h, 08bh, 0c5h
+ 9568 1EFFFE29CA76              db      01eh, 0ffh, 0feh, 029h, 0cah, 076h
+ 956E 95CDA2882CCD              db      095h, 0cdh, 0a2h, 088h, 02ch, 0cdh
+ 9574 0B96CDA28829              db      00bh, 096h, 0cdh, 0a2h, 088h, 029h
+ 957A F1E3012995C5              db      0f1h, 0e3h, 001h, 029h, 095h, 0c5h
+ 9580 3DBE0600D04F              db      03dh, 0beh, 006h, 000h, 0d0h, 04fh
+ 9586 7E91BB47D843              db      07eh, 091h, 0bbh, 047h, 0d8h, 043h
+ 958C C9CDF794CAAC              db      0c9h, 0cdh, 0f7h, 094h, 0cah, 0ach
+ 9592 965F23237E23              db      096h, 05fh, 023h, 023h, 07eh, 023h
+ 9598 666FE5194672              db      066h, 06fh, 0e5h, 019h, 046h, 072h
+ 959E E3C57EFE24C2              db      0e3h, 0c5h, 07eh, 0feh, 024h, 0c2h
+ 95A4 AC95CDDD9DC3              db      0ach, 095h, 0cdh, 0ddh, 09dh, 0c3h
+ 95AA BA95FE25C2B7              db      0bah, 095h, 0feh, 025h, 0c2h, 0b7h
+ 95B0 95CD599EC3BA              db      095h, 0cdh, 059h, 09eh, 0c3h, 0bah
+ 95B6 95CD9399C1E1              db      095h, 0cdh, 093h, 099h, 0c1h, 0e1h
+ 95BC 70C9EBCDA288              db      070h, 0c9h, 0ebh, 0cdh, 0a2h, 088h
+ 95C2 29C1D1C543C9              db      029h, 0c1h, 0d1h, 0c5h, 043h, 0c9h
+ 95C8 CD0E96323F05              db      0cdh, 00eh, 096h, 032h, 03fh, 005h
+ 95CE CD3E05C37292              db      0cdh, 03eh, 005h, 0c3h, 072h, 092h
+ 95D4 CDF895C30605              db      0cdh, 0f8h, 095h, 0c3h, 006h, 005h
+ 95DA CDF895F51E00              db      0cdh, 0f8h, 095h, 0f5h, 01eh, 000h
+ 95E0 2BCD308ACAEE              db      02bh, 0cdh, 030h, 08ah, 0cah, 0eeh
+ 95E6 95CDA2882CCD              db      095h, 0cdh, 0a2h, 088h, 02ch, 0cdh
+ 95EC 0B96C1CD3E05              db      00bh, 096h, 0c1h, 0cdh, 03eh, 005h
+ 95F2 ABA0CAEF95C9              db      0abh, 0a0h, 0cah, 0efh, 095h, 0c9h
+ 95F8 CD0B96323F05              db      0cdh, 00bh, 096h, 032h, 03fh, 005h
+ 95FE 320705CDA288              db      032h, 007h, 005h, 0cdh, 0a2h, 088h
+ 9604 2CC30B96CD30              db      02ch, 0c3h, 00bh, 096h, 0cdh, 030h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  22
+
+
+ 960A 8ACDA78ECDE6              db      08ah, 0cdh, 0a7h, 08eh, 0cdh, 0e6h
+ 9610 8A7AB7C2018B              db      08ah, 07ah, 0b7h, 0c2h, 001h, 08bh
+ 9616 2BCD308A7BC9              db      02bh, 0cdh, 030h, 08ah, 07bh, 0c9h
+ 961C CDEC8A1AC372              db      0cdh, 0ech, 08ah, 01ah, 0c3h, 072h
+ 9622 92CDA78ECDEC              db      092h, 0cdh, 0a7h, 08eh, 0cdh, 0ech
+ 9628 8AD5CDA2882C              db      08ah, 0d5h, 0cdh, 0a2h, 088h, 02ch
+ 962E CD0B96D112C9              db      0cdh, 00bh, 096h, 0d1h, 012h, 0c9h
+ 9634 210A9BCDDB98              db      021h, 00ah, 09bh, 0cdh, 0dbh, 098h
+ 963A C34696CDDB98              db      0c3h, 046h, 096h, 0cdh, 0dbh, 098h
+ 9640 21C1D1CDB598              db      021h, 0c1h, 0d1h, 0cdh, 0b5h, 098h
+ 9646 78B7C83AE705              db      078h, 0b7h, 0c8h, 03ah, 0e7h, 005h
+ 964C B7CACD9890D2              db      0b7h, 0cah, 0cdh, 098h, 090h, 0d2h
+ 9652 60962F3CEBCD              db      060h, 096h, 02fh, 03ch, 0ebh, 0cdh
+ 9658 BD98EBCDCD98              db      0bdh, 098h, 0ebh, 0cdh, 0cdh, 098h
+ 965E C1D1FE19D0F5              db      0c1h, 0d1h, 0feh, 019h, 0d0h, 0f5h
+ 9664 CDF29867F1CD              db      0cdh, 0f2h, 098h, 067h, 0f1h, 0cdh
+ 966A 0B97B421E405              db      00bh, 097h, 0b4h, 021h, 0e4h, 005h
+ 9670 F28696CDEB96              db      0f2h, 086h, 096h, 0cdh, 0ebh, 096h
+ 9676 D2CC962334CA              db      0d2h, 0cch, 096h, 023h, 034h, 0cah
+ 967C E3852E01CD21              db      0e3h, 085h, 02eh, 001h, 0cdh, 021h
+ 9682 97C3CC96AF90              db      097h, 0c3h, 0cch, 096h, 0afh, 090h
+ 9688 477E9B5F237E              db      047h, 07eh, 09bh, 05fh, 023h, 07eh
+ 968E 9A57237E994F              db      09ah, 057h, 023h, 07eh, 099h, 04fh
+ 9694 DCF7966863AF              db      0dch, 0f7h, 096h, 068h, 063h, 0afh
+ 969A 4779B7C2B996              db      047h, 079h, 0b7h, 0c2h, 0b9h, 096h
+ 96A0 4A54656F78D6              db      04ah, 054h, 065h, 06fh, 078h, 0d6h
+ 96A6 08FEE0C29A96              db      008h, 0feh, 0e0h, 0c2h, 09ah, 096h
+ 96AC AF32E705C905              db      0afh, 032h, 0e7h, 005h, 0c9h, 005h
+ 96B2 297A1757798F              db      029h, 07ah, 017h, 057h, 079h, 08fh
+ 96B8 4FF2B196785C              db      04fh, 0f2h, 0b1h, 096h, 078h, 05ch
+ 96BE 45B7CACC9621              db      045h, 0b7h, 0cah, 0cch, 096h, 021h
+ 96C4 E7058677D2AC              db      0e7h, 005h, 086h, 077h, 0d2h, 0ach
+ 96CA 96C87821E705              db      096h, 0c8h, 078h, 021h, 0e7h, 005h
+ 96D0 B7FCDE964623              db      0b7h, 0fch, 0deh, 096h, 046h, 023h
+ 96D6 7EE680A94FC3              db      07eh, 0e6h, 080h, 0a9h, 04fh, 0c3h
+ 96DC CD981CC014C0              db      0cdh, 098h, 01ch, 0c0h, 014h, 0c0h
+ 96E2 0CC00E8034C0              db      00ch, 0c0h, 00eh, 080h, 034h, 0c0h
+ 96E8 C3E3857E835F              db      0c3h, 0e3h, 085h, 07eh, 083h, 05fh
+ 96EE 237E8A57237E              db      023h, 07eh, 08ah, 057h, 023h, 07eh
+ 96F4 894FC921E805              db      089h, 04fh, 0c9h, 021h, 0e8h, 005h
+ 96FA 7E2F77AF6F90              db      07eh, 02fh, 077h, 0afh, 06fh, 090h
+ 9700 477D9B5F7D9A              db      047h, 07dh, 09bh, 05fh, 07dh, 09ah
+ 9706 577D994FC906              db      057h, 07dh, 099h, 04fh, 0c9h, 006h
+ 970C 00D608DA1A97              db      000h, 0d6h, 008h, 0dah, 01ah, 097h
+ 9712 435A510E00C3              db      043h, 05ah, 051h, 00eh, 000h, 0c3h
+ 9718 0D97C6096FAF              db      00dh, 097h, 0c6h, 009h, 06fh, 0afh
+ 971E 2DC8791F4F7A              db      02dh, 0c8h, 079h, 01fh, 04fh, 07ah
+ 9724 1F577B1F5F78              db      01fh, 057h, 07bh, 01fh, 05fh, 078h
+ 972A 1F47C31D9700              db      01fh, 047h, 0c3h, 01dh, 097h, 000h
+ 9730 00008103AA56              db      000h, 000h, 081h, 003h, 0aah, 056h
+ 9736 1980F1227680              db      019h, 080h, 0f1h, 022h, 076h, 080h
+ 973C 45AA3882CD8C              db      045h, 0aah, 038h, 082h, 0cdh, 08ch
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  23
+
+
+ 9742 98B7EA018B21              db      098h, 0b7h, 0eah, 001h, 08bh, 021h
+ 9748 E7057E013580              db      0e7h, 005h, 07eh, 001h, 035h, 080h
+ 974E 11F30490F570              db      011h, 0f3h, 004h, 090h, 0f5h, 070h
+ 9754 D5C5CD4696C1              db      0d5h, 0c5h, 0cdh, 046h, 096h, 0c1h
+ 975A D104CDE29721              db      0d1h, 004h, 0cdh, 0e2h, 097h, 021h
+ 9760 2F97CD3D9621              db      02fh, 097h, 0cdh, 03dh, 096h, 021h
+ 9766 3397CDD49B01              db      033h, 097h, 0cdh, 0d4h, 09bh, 001h
+ 976C 8080110000CD              db      080h, 080h, 011h, 000h, 000h, 0cdh
+ 9772 4696F1CD079A              db      046h, 096h, 0f1h, 0cdh, 007h, 09ah
+ 9778 013180111872              db      001h, 031h, 080h, 011h, 018h, 072h
+ 977E 21C1D1CD8C98              db      021h, 0c1h, 0d1h, 0cdh, 08ch, 098h
+ 9784 C82E00CD4A98              db      0c8h, 02eh, 000h, 0cdh, 04ah, 098h
+ 978A 7932F605EB22              db      079h, 032h, 0f6h, 005h, 0ebh, 022h
+ 9790 F70501000050              db      0f7h, 005h, 001h, 000h, 000h, 050h
+ 9796 58219796E521              db      058h, 021h, 097h, 096h, 0e5h, 021h
+ 979C A397E5E521E4              db      0a3h, 097h, 0e5h, 0e5h, 021h, 0e4h
+ 97A2 057E23B7CACF              db      005h, 07eh, 023h, 0b7h, 0cah, 0cfh
+ 97A8 97E52E081F67              db      097h, 0e5h, 02eh, 008h, 01fh, 067h
+ 97AE 79D2BD97E52A              db      079h, 0d2h, 0bdh, 097h, 0e5h, 02ah
+ 97B4 F70519EBE13A              db      0f7h, 005h, 019h, 0ebh, 0e1h, 03ah
+ 97BA F605891F4F7A              db      0f6h, 005h, 089h, 01fh, 04fh, 07ah
+ 97C0 1F577B1F5F78              db      01fh, 057h, 07bh, 01fh, 05fh, 078h
+ 97C6 1F472D7CC2AC              db      01fh, 047h, 02dh, 07ch, 0c2h, 0ach
+ 97CC 97E1C9435A51              db      097h, 0e1h, 0c9h, 043h, 05ah, 051h
+ 97D2 4FC9CDBD9801              db      04fh, 0c9h, 0cdh, 0bdh, 098h, 001h
+ 97D8 2084110000CD              db      020h, 084h, 011h, 000h, 000h, 0cdh
+ 97DE CD98C1D1CD8C              db      0cdh, 098h, 0c1h, 0d1h, 0cdh, 08ch
+ 97E4 98CAD7852EFF              db      098h, 0cah, 0d7h, 085h, 02eh, 0ffh
+ 97EA CD4A9834342B              db      0cdh, 04ah, 098h, 034h, 034h, 02bh
+ 97F0 7E3212052B7E              db      07eh, 032h, 012h, 005h, 02bh, 07eh
+ 97F6 320E052B7E32              db      032h, 00eh, 005h, 02bh, 07eh, 032h
+ 97FC 0A0541EBAF4F              db      00ah, 005h, 041h, 0ebh, 0afh, 04fh
+ 9802 575F321505E5              db      057h, 05fh, 032h, 015h, 005h, 0e5h
+ 9808 C57DCD0905DE              db      0c5h, 07dh, 0cdh, 009h, 005h, 0deh
+ 980E 003FD21A9832              db      000h, 03fh, 0d2h, 01ah, 098h, 032h
+ 9814 1505F1F137D2              db      015h, 005h, 0f1h, 0f1h, 037h, 0d2h
+ 981A C1E1793C3D1F              db      0c1h, 0e1h, 079h, 03ch, 03dh, 01fh
+ 9820 FACD96177B17              db      0fah, 0cdh, 096h, 017h, 07bh, 017h
+ 9826 5F7A17577917              db      05fh, 07ah, 017h, 057h, 079h, 017h
+ 982C 4F297817473A              db      04fh, 029h, 078h, 017h, 047h, 03ah
+ 9832 150517321505              db      015h, 005h, 017h, 032h, 015h, 005h
+ 9838 79B2B3C20798              db      079h, 0b2h, 0b3h, 0c2h, 007h, 098h
+ 983E E521E70535E1              db      0e5h, 021h, 0e7h, 005h, 035h, 0e1h
+ 9844 C20798C3E385              db      0c2h, 007h, 098h, 0c3h, 0e3h, 085h
+ 984A 78B7CA6E987D              db      078h, 0b7h, 0cah, 06eh, 098h, 07dh
+ 9850 21E705AE8047              db      021h, 0e7h, 005h, 0aeh, 080h, 047h
+ 9856 1FA878F26D98              db      01fh, 0a8h, 078h, 0f2h, 06dh, 098h
+ 985C C68077CACD97              db      0c6h, 080h, 077h, 0cah, 0cdh, 097h
+ 9862 CDF298772BC9              db      0cdh, 0f2h, 098h, 077h, 02bh, 0c9h
+ 9868 CD8C982FE1B7              db      0cdh, 08ch, 098h, 02fh, 0e1h, 0b7h
+ 986E E1F2AC96C3E3              db      0e1h, 0f2h, 0ach, 096h, 0c3h, 0e3h
+ 9874 85CDD89878B7              db      085h, 0cdh, 0d8h, 098h, 078h, 0b7h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  24
+
+
+ 987A C8C602DAE385              db      0c8h, 0c6h, 002h, 0dah, 0e3h, 085h
+ 9880 47CD469621E7              db      047h, 0cdh, 046h, 096h, 021h, 0e7h
+ 9886 0534C0C3E385              db      005h, 034h, 0c0h, 0c3h, 0e3h, 085h
+ 988C 3AE705B7C83A              db      03ah, 0e7h, 005h, 0b7h, 0c8h, 03ah
+ 9892 E605FE2F179F              db      0e6h, 005h, 0feh, 02fh, 017h, 09fh
+ 9898 C03CC9CD8C98              db      0c0h, 03ch, 0c9h, 0cdh, 08ch, 098h
+ 989E 068811000021              db      006h, 088h, 011h, 000h, 000h, 021h
+ 98A4 E7054F700600              db      0e7h, 005h, 04fh, 070h, 006h, 000h
+ 98AA 23368017C394              db      023h, 036h, 080h, 017h, 0c3h, 094h
+ 98B0 96CD8C98F021              db      096h, 0cdh, 08ch, 098h, 0f0h, 021h
+ 98B6 E6057EEE8077              db      0e6h, 005h, 07eh, 0eeh, 080h, 077h
+ 98BC C9EB2AE405E3              db      0c9h, 0ebh, 02ah, 0e4h, 005h, 0e3h
+ 98C2 E52AE605E3E5              db      0e5h, 02ah, 0e6h, 005h, 0e3h, 0e5h
+ 98C8 EBC9CDDB98EB              db      0ebh, 0c9h, 0cdh, 0dbh, 098h, 0ebh
+ 98CE 22E405606922              db      022h, 0e4h, 005h, 060h, 069h, 022h
+ 98D4 E605EBC921E4              db      0e6h, 005h, 0ebh, 0c9h, 021h, 0e4h
+ 98DA 055E2356234E              db      005h, 05eh, 023h, 056h, 023h, 04eh
+ 98E0 234623C911E4              db      023h, 046h, 023h, 0c9h, 011h, 0e4h
+ 98E6 0506041A7713              db      005h, 006h, 004h, 01ah, 077h, 013h
+ 98EC 2305C2E998C9              db      023h, 005h, 0c2h, 0e9h, 098h, 0c9h
+ 98F2 21E6057E0737              db      021h, 0e6h, 005h, 07eh, 007h, 037h
+ 98F8 1F773F1F2323              db      01fh, 077h, 03fh, 01fh, 023h, 023h
+ 98FE 777907371F4F              db      077h, 079h, 007h, 037h, 01fh, 04fh
+ 9904 1FAEC978B7CA              db      01fh, 0aeh, 0c9h, 078h, 0b7h, 0cah
+ 990A 8C98219598E5              db      08ch, 098h, 021h, 095h, 098h, 0e5h
+ 9910 CD8C9879C821              db      0cdh, 08ch, 098h, 079h, 0c8h, 021h
+ 9916 E605AE79F8CD              db      0e6h, 005h, 0aeh, 079h, 0f8h, 0cdh
+ 991C 21991FA9C923              db      021h, 099h, 01fh, 0a9h, 0c9h, 023h
+ 9922 78BEC02B79BE              db      078h, 0beh, 0c0h, 02bh, 079h, 0beh
+ 9928 C02B7ABEC02B              db      0c0h, 02bh, 07ah, 0beh, 0c0h, 02bh
+ 992E 7B96C0E1E1C9              db      07bh, 096h, 0c0h, 0e1h, 0e1h, 0c9h
+ 9934 474F575FB7C8              db      047h, 04fh, 057h, 05fh, 0b7h, 0c8h
+ 993A E5CDD898CDF2              db      0e5h, 0cdh, 0d8h, 098h, 0cdh, 0f2h
+ 9940 98AE67FC5899              db      098h, 0aeh, 067h, 0fch, 058h, 099h
+ 9946 3E9890CD0B97              db      03eh, 098h, 090h, 0cdh, 00bh, 097h
+ 994C 7C17DCDE9606              db      07ch, 017h, 0dch, 0deh, 096h, 006h
+ 9952 00DCF796E1C9              db      000h, 0dch, 0f7h, 096h, 0e1h, 0c9h
+ 9958 1B7AA33CC00B              db      01bh, 07ah, 0a3h, 03ch, 0c0h, 00bh
+ 995E C921E7057EFE              db      0c9h, 021h, 0e7h, 005h, 07eh, 0feh
+ 9964 983AE405D07E              db      098h, 03ah, 0e4h, 005h, 0d0h, 07eh
+ 996A CD349936987B              db      0cdh, 034h, 099h, 036h, 098h, 07bh
+ 9970 F57917CD9496              db      0f5h, 079h, 017h, 0cdh, 094h, 096h
+ 9976 F1C921000078              db      0f1h, 0c9h, 021h, 000h, 000h, 078h
+ 997C B1C83E1029DA              db      0b1h, 0c8h, 03eh, 010h, 029h, 0dah
+ 9982 B691EB29EBD2              db      0b6h, 091h, 0ebh, 029h, 0ebh, 0d2h
+ 9988 8E9909DAB691              db      08eh, 099h, 009h, 0dah, 0b6h, 091h
+ 998E 3DC28099C9FE              db      03dh, 0c2h, 080h, 099h, 0c9h, 0feh
+ 9994 2DF5CA9F99FE              db      02dh, 0f5h, 0cah, 09fh, 099h, 0feh
+ 999A 2BCA9F992BCD              db      02bh, 0cah, 09fh, 099h, 02bh, 0cdh
+ 99A0 AC9647575F2F              db      0ach, 096h, 047h, 057h, 05fh, 02fh
+ 99A6 4FCD308ADAF0              db      04fh, 0cdh, 030h, 08ah, 0dah, 0f0h
+ 99AC 99FE2ECACB99              db      099h, 0feh, 02eh, 0cah, 0cbh, 099h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  25
+
+
+ 99B2 FE45C2CF99CD              db      0feh, 045h, 0c2h, 0cfh, 099h, 0cdh
+ 99B8 308ACDE18FCD              db      030h, 08ah, 0cdh, 0e1h, 08fh, 0cdh
+ 99BE 308ADA129A14              db      030h, 08ah, 0dah, 012h, 09ah, 014h
+ 99C4 C2CF99AF935F              db      0c2h, 0cfh, 099h, 0afh, 093h, 05fh
+ 99CA 0C0CCAA799E5              db      00ch, 00ch, 0cah, 0a7h, 099h, 0e5h
+ 99D0 7B90F4E899F2              db      07bh, 090h, 0f4h, 0e8h, 099h, 0f2h
+ 99D6 DE99F5CDD497              db      0deh, 099h, 0f5h, 0cdh, 0d4h, 097h
+ 99DC F13CC2D299D1              db      0f1h, 03ch, 0c2h, 0d2h, 099h, 0d1h
+ 99E2 F1CCB598EBC9              db      0f1h, 0cch, 0b5h, 098h, 0ebh, 0c9h
+ 99E8 C8F5CD7598F1              db      0c8h, 0f5h, 0cdh, 075h, 098h, 0f1h
+ 99EE 3DC9D5577889              db      03dh, 0c9h, 0d5h, 057h, 078h, 089h
+ 99F4 47C5E5D5CD75              db      047h, 0c5h, 0e5h, 0d5h, 0cdh, 075h
+ 99FA 98F1D630CD07              db      098h, 0f1h, 0d6h, 030h, 0cdh, 007h
+ 9A00 9AE1C1D1C3A7              db      09ah, 0e1h, 0c1h, 0d1h, 0c3h, 0a7h
+ 9A06 99CDBD98CD9E              db      099h, 0cdh, 0bdh, 098h, 0cdh, 09eh
+ 9A0C 98C1D1C34696              db      098h, 0c1h, 0d1h, 0c3h, 046h, 096h
+ 9A12 7B0707830786              db      07bh, 007h, 007h, 083h, 007h, 086h
+ 9A18 D6305FC3BD99              db      0d6h, 030h, 05fh, 0c3h, 0bdh, 099h
+ 9A1E E5216C85CD81              db      0e5h, 021h, 06ch, 085h, 0cdh, 081h
+ 9A24 93E1EBAF0698              db      093h, 0e1h, 0ebh, 0afh, 006h, 098h
+ 9A2A CDA398218093              db      0cdh, 0a3h, 098h, 021h, 080h, 093h
+ 9A30 E521E905E5CD              db      0e5h, 021h, 0e9h, 005h, 0e5h, 0cdh
+ 9A36 8C983620F23F              db      08ch, 098h, 036h, 020h, 0f2h, 03fh
+ 9A3C 9A362D233630              db      09ah, 036h, 02dh, 023h, 036h, 030h
+ 9A42 CAF59AE5FCB5              db      0cah, 0f5h, 09ah, 0e5h, 0fch, 0b5h
+ 9A48 98AFF5CDFB9A              db      098h, 0afh, 0f5h, 0cdh, 0fbh, 09ah
+ 9A4E 01439111F84F              db      001h, 043h, 091h, 011h, 0f8h, 04fh
+ 9A54 CD0799B7E26C              db      0cdh, 007h, 099h, 0b7h, 0e2h, 06ch
+ 9A5A 9AF1CDE999F5              db      09ah, 0f1h, 0cdh, 0e9h, 099h, 0f5h
+ 9A60 C34E9ACDD497              db      0c3h, 04eh, 09ah, 0cdh, 0d4h, 097h
+ 9A66 F13CF5CDFB9A              db      0f1h, 03ch, 0f5h, 0cdh, 0fbh, 09ah
+ 9A6C CD34963CCD34              db      0cdh, 034h, 096h, 03ch, 0cdh, 034h
+ 9A72 99CDCD980106              db      099h, 0cdh, 0cdh, 098h, 001h, 006h
+ 9A78 03F1813CFA88              db      003h, 0f1h, 081h, 03ch, 0fah, 088h
+ 9A7E 9AFE08D2889A              db      09ah, 0feh, 008h, 0d2h, 088h, 09ah
+ 9A84 3C473E023D3D              db      03ch, 047h, 03eh, 002h, 03dh, 03dh
+ 9A8A E1F5110E9B05              db      0e1h, 0f5h, 011h, 00eh, 09bh, 005h
+ 9A90 C2999A362E23              db      0c2h, 099h, 09ah, 036h, 02eh, 023h
+ 9A96 36302305362E              db      036h, 030h, 023h, 005h, 036h, 02eh
+ 9A9C CCE298C5E5D5              db      0cch, 0e2h, 098h, 0c5h, 0e5h, 0d5h
+ 9AA2 CDD898E1062F              db      0cdh, 0d8h, 098h, 0e1h, 006h, 02fh
+ 9AA8 047B965F237A              db      004h, 07bh, 096h, 05fh, 023h, 07ah
+ 9AAE 9E5723799E4F              db      09eh, 057h, 023h, 079h, 09eh, 04fh
+ 9AB4 2B2BD2A89ACD              db      02bh, 02bh, 0d2h, 0a8h, 09ah, 0cdh
+ 9ABA EB9623CDCD98              db      0ebh, 096h, 023h, 0cdh, 0cdh, 098h
+ 9AC0 EBE17023C10D              db      0ebh, 0e1h, 070h, 023h, 0c1h, 00dh
+ 9AC6 C2999A05CAD9              db      0c2h, 099h, 09ah, 005h, 0cah, 0d9h
+ 9ACC 9A2B7EFE30CA              db      09ah, 02bh, 07eh, 0feh, 030h, 0cah
+ 9AD2 CD9AFE2EC4E2              db      0cdh, 09ah, 0feh, 02eh, 0c4h, 0e2h
+ 9AD8 98F1CAF89A36              db      098h, 0f1h, 0cah, 0f8h, 09ah, 036h
+ 9ADE 4523362BF2E9              db      045h, 023h, 036h, 02bh, 0f2h, 0e9h
+ 9AE4 9A362D2F3C06              db      09ah, 036h, 02dh, 02fh, 03ch, 006h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  26
+
+
+ 9AEA 2F04D60AD2EB              db      02fh, 004h, 0d6h, 00ah, 0d2h, 0ebh
+ 9AF0 9AC63A237023              db      09ah, 0c6h, 03ah, 023h, 070h, 023h
+ 9AF6 772371E1C901              db      077h, 023h, 071h, 0e1h, 0c9h, 001h
+ 9AFC 749411F723CD              db      074h, 094h, 011h, 0f7h, 023h, 0cdh
+ 9B02 0799B7E1E263              db      007h, 099h, 0b7h, 0e1h, 0e2h, 063h
+ 9B08 9AE900000080              db      09ah, 0e9h, 000h, 000h, 000h, 080h
+ 9B0E A08601102700              db      0a0h, 086h, 001h, 010h, 027h, 000h
+ 9B14 E80300640000              db      0e8h, 003h, 000h, 064h, 000h, 000h
+ 9B1A 0A0000010000              db      00ah, 000h, 000h, 001h, 000h, 000h
+ 9B20 21B598E3E9CD              db      021h, 0b5h, 098h, 0e3h, 0e9h, 0cdh
+ 9B26 BD98210A9BCD              db      0bdh, 098h, 021h, 00ah, 09bh, 0cdh
+ 9B2C CA98C1D1CD8C              db      0cah, 098h, 0c1h, 0d1h, 0cdh, 08ch
+ 9B32 9878CA739BF2              db      098h, 078h, 0cah, 073h, 09bh, 0f2h
+ 9B38 3E9BB7CAD785              db      03eh, 09bh, 0b7h, 0cah, 0d7h, 085h
+ 9B3E B7CAAD96D5C5              db      0b7h, 0cah, 0adh, 096h, 0d5h, 0c5h
+ 9B44 79F67FCDD898              db      079h, 0f6h, 07fh, 0cdh, 0d8h, 098h
+ 9B4A F25B9BD5C5CD              db      0f2h, 05bh, 09bh, 0d5h, 0c5h, 0cdh
+ 9B50 5F99C1D1F5CD              db      05fh, 099h, 0c1h, 0d1h, 0f5h, 0cdh
+ 9B56 0799E17C1FE1              db      007h, 099h, 0e1h, 07ch, 01fh, 0e1h
+ 9B5C 22E605E122E4              db      022h, 0e6h, 005h, 0e1h, 022h, 0e4h
+ 9B62 05DC209BCCB5              db      005h, 0dch, 020h, 09bh, 0cch, 0b5h
+ 9B68 98D5C5CD4097              db      098h, 0d5h, 0c5h, 0cdh, 040h, 097h
+ 9B6E C1D1CD8197CD              db      0c1h, 0d1h, 0cdh, 081h, 097h, 0cdh
+ 9B74 BD9801388111              db      0bdh, 098h, 001h, 038h, 081h, 011h
+ 9B7A 3BAACD81973A              db      03bh, 0aah, 0cdh, 081h, 097h, 03ah
+ 9B80 E705FE88D268              db      0e7h, 005h, 0feh, 088h, 0d2h, 068h
+ 9B86 98CD5F99C680              db      098h, 0cdh, 05fh, 099h, 0c6h, 080h
+ 9B8C C602DA6898F5              db      0c6h, 002h, 0dah, 068h, 098h, 0f5h
+ 9B92 212F97CD3796              db      021h, 02fh, 097h, 0cdh, 037h, 096h
+ 9B98 CD7897F1C1D1              db      0cdh, 078h, 097h, 0f1h, 0c1h, 0d1h
+ 9B9E F5CD4396CDB5              db      0f5h, 0cdh, 043h, 096h, 0cdh, 0b5h
+ 9BA4 9821B39BCDE3              db      098h, 021h, 0b3h, 09bh, 0cdh, 0e3h
+ 9BAA 9B110000C14A              db      09bh, 011h, 000h, 000h, 0c1h, 04ah
+ 9BB0 C3819708402E              db      0c3h, 081h, 097h, 008h, 040h, 02eh
+ 9BB6 9474704F2E77              db      094h, 074h, 070h, 04fh, 02eh, 077h
+ 9BBC 6E02887AE6A0              db      06eh, 002h, 088h, 07ah, 0e6h, 0a0h
+ 9BC2 2A7C50AAAA7E              db      02ah, 07ch, 050h, 0aah, 0aah, 07eh
+ 9BC8 FFFF7F7F0000              db      0ffh, 0ffh, 07fh, 07fh, 000h, 000h
+ 9BCE 808100000081              db      080h, 081h, 000h, 000h, 000h, 081h
+ 9BD4 CDBD98117F97              db      0cdh, 0bdh, 098h, 011h, 07fh, 097h
+ 9BDA D5E5CDD898CD              db      0d5h, 0e5h, 0cdh, 0d8h, 098h, 0cdh
+ 9BE0 8197E1CDBD98              db      081h, 097h, 0e1h, 0cdh, 0bdh, 098h
+ 9BE6 7E23CDCA9806              db      07eh, 023h, 0cdh, 0cah, 098h, 006h
+ 9BEC F1C1D13DC8D5              db      0f1h, 0c1h, 0d1h, 03dh, 0c8h, 0d5h
+ 9BF2 C5F5E5CD8197              db      0c5h, 0f5h, 0e5h, 0cdh, 081h, 097h
+ 9BF8 E1CDDB98E5CD              db      0e1h, 0cdh, 0dbh, 098h, 0e5h, 0cdh
+ 9BFE 4696E1C3EC9B              db      046h, 096h, 0e1h, 0c3h, 0ech, 09bh
+ 9C04 CD8C98211905              db      0cdh, 08ch, 098h, 021h, 019h, 005h
+ 9C0A FA659C213A05              db      0fah, 065h, 09ch, 021h, 03ah, 005h
+ 9C10 CDCA98211905              db      0cdh, 0cah, 098h, 021h, 019h, 005h
+ 9C16 C886E6070600              db      0c8h, 086h, 0e6h, 007h, 006h, 000h
+ 9C1C 772387874F09              db      077h, 023h, 087h, 087h, 04fh, 009h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  27
+
+
+ 9C22 CDDB98CD8197              db      0cdh, 0dbh, 098h, 0cdh, 081h, 097h
+ 9C28 3A18053CE603              db      03ah, 018h, 005h, 03ch, 0e6h, 003h
+ 9C2E 0600FE018832              db      006h, 000h, 0feh, 001h, 088h, 032h
+ 9C34 180521699C87              db      018h, 005h, 021h, 069h, 09ch, 087h
+ 9C3A 874F09CD3796              db      087h, 04fh, 009h, 0cdh, 037h, 096h
+ 9C40 CDD8987B59EE              db      0cdh, 0d8h, 098h, 07bh, 059h, 0eeh
+ 9C46 4F4F36802B46              db      04fh, 04fh, 036h, 080h, 02bh, 046h
+ 9C4C 368021170534              db      036h, 080h, 021h, 017h, 005h, 034h
+ 9C52 7ED6ABC25C9C              db      07eh, 0d6h, 0abh, 0c2h, 05ch, 09ch
+ 9C58 770C151CCD97              db      077h, 00ch, 015h, 01ch, 0cdh, 097h
+ 9C5E 96213A05C3E4              db      096h, 021h, 03ah, 005h, 0c3h, 0e4h
+ 9C64 98772B772B77              db      098h, 077h, 02bh, 077h, 02bh, 077h
+ 9C6A C3409C68B146              db      0c3h, 040h, 09ch, 068h, 0b1h, 046h
+ 9C70 6899E9926910              db      068h, 099h, 0e9h, 092h, 069h, 010h
+ 9C76 D1756821C39C              db      0d1h, 075h, 068h, 021h, 0c3h, 09ch
+ 9C7C CD3796CDBD98              db      0cdh, 037h, 096h, 0cdh, 0bdh, 098h
+ 9C82 01498311DB0F              db      001h, 049h, 083h, 011h, 0dbh, 00fh
+ 9C88 CDCD98C1D1CD              db      0cdh, 0cdh, 098h, 0c1h, 0d1h, 0cdh
+ 9C8E E297CDBD98CD              db      0e2h, 097h, 0cdh, 0bdh, 098h, 0cdh
+ 9C94 5F99C1D1CD43              db      05fh, 099h, 0c1h, 0d1h, 0cdh, 043h
+ 9C9A 9621C79CCD3D              db      096h, 021h, 0c7h, 09ch, 0cdh, 03dh
+ 9CA0 96CD8C9837F2              db      096h, 0cdh, 08ch, 098h, 037h, 0f2h
+ 9CA6 AF9CCD3496CD              db      0afh, 09ch, 0cdh, 034h, 096h, 0cdh
+ 9CAC 8C98B7F5F4B5              db      08ch, 098h, 0b7h, 0f5h, 0f4h, 0b5h
+ 9CB2 9821C79CCD37              db      098h, 021h, 0c7h, 09ch, 0cdh, 037h
+ 9CB8 96F1D4B59821              db      096h, 0f1h, 0d4h, 0b5h, 098h, 021h
+ 9CBE CB9CC3D49BDB              db      0cbh, 09ch, 0c3h, 0d4h, 09bh, 0dbh
+ 9CC4 0F4981000000              db      00fh, 049h, 081h, 000h, 000h, 000h
+ 9CCA 7F05BAD71E86              db      07fh, 005h, 0bah, 0d7h, 01eh, 086h
+ 9CD0 642699875834              db      064h, 026h, 099h, 087h, 058h, 034h
+ 9CD6 2387E05DA586              db      023h, 087h, 0e0h, 05dh, 0a5h, 086h
+ 9CDC DA0F4983CDBD              db      0dah, 00fh, 049h, 083h, 0cdh, 0bdh
+ 9CE2 98CD7F9CC1E1              db      098h, 0cdh, 07fh, 09ch, 0c1h, 0e1h
+ 9CE8 CDBD98EBCDCD              db      0cdh, 0bdh, 098h, 0ebh, 0cdh, 0cdh
+ 9CEE 98CD799CC3E0              db      098h, 0cdh, 079h, 09ch, 0c3h, 0e0h
+ 9CF4 97CD8C98FC20              db      097h, 0cdh, 08ch, 098h, 0fch, 020h
+ 9CFA 9BFCB5983AE7              db      09bh, 0fch, 0b5h, 098h, 03ah, 0e7h
+ 9D00 05FE81DA129D              db      005h, 0feh, 081h, 0dah, 012h, 09dh
+ 9D06 0100815159CD              db      001h, 000h, 081h, 051h, 059h, 0cdh
+ 9D0C E297213D96E5              db      0e2h, 097h, 021h, 03dh, 096h, 0e5h
+ 9D12 211C9DCDD49B              db      021h, 01ch, 09dh, 0cdh, 0d4h, 09bh
+ 9D18 21C39CC9094A              db      021h, 0c3h, 09ch, 0c9h, 009h, 04ah
+ 9D1E D73B78026E84              db      0d7h, 03bh, 078h, 002h, 06eh, 084h
+ 9D24 7BFEC12F7C74              db      07bh, 0feh, 0c1h, 02fh, 07ch, 074h
+ 9D2A 319A7D843D5A              db      031h, 09ah, 07dh, 084h, 03dh, 05ah
+ 9D30 7DC87F917EE4              db      07dh, 0c8h, 07fh, 091h, 07eh, 0e4h
+ 9D36 BB4C7E6CAAAA              db      0bbh, 04ch, 07eh, 06ch, 0aah, 0aah
+ 9D3C 7F00000081C9              db      07fh, 000h, 000h, 000h, 081h, 0c9h
+ 9D42 3E0CC30782CD              db      03eh, 00ch, 0c3h, 007h, 082h, 0cdh
+ 9D48 0B967B324205              db      00bh, 096h, 07bh, 032h, 042h, 005h
+ 9D4E C9CDA78ECDEC              db      0c9h, 0cdh, 0a7h, 08eh, 0cdh, 0ech
+ 9D54 8AE5D5E12246              db      08ah, 0e5h, 0d5h, 0e1h, 022h, 046h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  28
+
+
+ 9D5A 05224805E1C9              db      005h, 022h, 048h, 005h, 0e1h, 0c9h
+ 9D60 CDEC8AD5E146              db      0cdh, 0ech, 08ah, 0d5h, 0e1h, 046h
+ 9D66 237EC36392CD              db      023h, 07eh, 0c3h, 063h, 092h, 0cdh
+ 9D6C A78ECDEC8AD5              db      0a7h, 08eh, 0cdh, 0ech, 08ah, 0d5h
+ 9D72 CDA2882CCDA7              db      0cdh, 0a2h, 088h, 02ch, 0cdh, 0a7h
+ 9D78 8ECDEC8AE373              db      08eh, 0cdh, 0ech, 08ah, 0e3h, 073h
+ 9D7E 2372E1C9CDAA              db      023h, 072h, 0e1h, 0c9h, 0cdh, 0aah
+ 9D84 8ECDEC8AC521              db      08eh, 0cdh, 0ech, 08ah, 0c5h, 021h
+ 9D8A E9057AFE00CA              db      0e9h, 005h, 07ah, 0feh, 000h, 0cah
+ 9D90 9F9DCDBE9D78              db      09fh, 09dh, 0cdh, 0beh, 09dh, 078h
+ 9D96 FE30CA9D9D70              db      0feh, 030h, 0cah, 09dh, 09dh, 070h
+ 9D9C 2371237BCDBE              db      023h, 071h, 023h, 07bh, 0cdh, 0beh
+ 9DA2 9D7AFE00C2AF              db      09dh, 07ah, 0feh, 000h, 0c2h, 0afh
+ 9DA8 9D78FE30CAB1              db      09dh, 078h, 0feh, 030h, 0cah, 0b1h
+ 9DAE 9D70237123AF              db      09dh, 070h, 023h, 071h, 023h, 0afh
+ 9DB4 772377C121E9              db      077h, 023h, 077h, 0c1h, 021h, 0e9h
+ 9DBA 05C3119347E6              db      005h, 0c3h, 011h, 093h, 047h, 0e6h
+ 9DC0 0FFE0ADAC89D              db      00fh, 0feh, 00ah, 0dah, 0c8h, 09dh
+ 9DC6 C607C6304F78              db      0c6h, 007h, 0c6h, 030h, 04fh, 078h
+ 9DCC 0F0F0F0FE60F              db      00fh, 00fh, 00fh, 00fh, 0e6h, 00fh
+ 9DD2 FE0ADAD99DC6              db      0feh, 00ah, 0dah, 0d9h, 09dh, 0c6h
+ 9DD8 07C63047C9EB              db      007h, 0c6h, 030h, 047h, 0c9h, 0ebh
+ 9DDE 210000CDF99D              db      021h, 000h, 000h, 0cdh, 0f9h, 09dh
+ 9DE4 DA1A9EC3F09D              db      0dah, 01ah, 09eh, 0c3h, 0f0h, 09dh
+ 9DEA CDF99DDA119E              db      0cdh, 0f9h, 09dh, 0dah, 011h, 09eh
+ 9DF0 29292929B56F              db      029h, 029h, 029h, 029h, 0b5h, 06fh
+ 9DF6 C3EA9D131AFE              db      0c3h, 0eah, 09dh, 013h, 01ah, 0feh
+ 9DFC 20CAF99DD630              db      020h, 0cah, 0f9h, 09dh, 0d6h, 030h
+ 9E02 D8FE0ADA0D9E              db      0d8h, 0feh, 00ah, 0dah, 00dh, 09eh
+ 9E08 D607FE0AD8FE              db      0d6h, 007h, 0feh, 00ah, 0d8h, 0feh
+ 9E0E 103FC9EB7A4B              db      010h, 03fh, 0c9h, 0ebh, 07ah, 04bh
+ 9E14 E5CD6292E1C9              db      0e5h, 0cdh, 062h, 092h, 0e1h, 0c9h
+ 9E1A 1E26C3E885CD              db      01eh, 026h, 0c3h, 0e8h, 085h, 0cdh
+ 9E20 AA8ECDEC8AC5              db      0aah, 08eh, 0cdh, 0ech, 08ah, 0c5h
+ 9E26 21E905061105              db      021h, 0e9h, 005h, 006h, 011h, 005h
+ 9E2C 78FE01CA3E9E              db      078h, 0feh, 001h, 0cah, 03eh, 09eh
+ 9E32 7B175F7A1757              db      07bh, 017h, 05fh, 07ah, 017h, 057h
+ 9E38 D22B9EC3449E              db      0d2h, 02bh, 09eh, 0c3h, 044h, 09eh
+ 9E3E 7B175F7A1757              db      07bh, 017h, 05fh, 07ah, 017h, 057h
+ 9E44 3E30CE007723              db      03eh, 030h, 0ceh, 000h, 077h, 023h
+ 9E4A 05C23E9EAF77              db      005h, 0c2h, 03eh, 09eh, 0afh, 077h
+ 9E50 2377C121E905              db      023h, 077h, 0c1h, 021h, 0e9h, 005h
+ 9E56 C31193EB2100              db      0c3h, 011h, 093h, 0ebh, 021h, 000h
+ 9E5C 00CD779EDA85              db      000h, 0cdh, 077h, 09eh, 0dah, 085h
+ 9E62 9ED63029B56F              db      09eh, 0d6h, 030h, 029h, 0b5h, 06fh
+ 9E68 CD779ED2639E              db      0cdh, 077h, 09eh, 0d2h, 063h, 09eh
+ 9E6E EB7A4BE5CD62              db      0ebh, 07ah, 04bh, 0e5h, 0cdh, 062h
+ 9E74 92E1C9131AFE              db      092h, 0e1h, 0c9h, 013h, 01ah, 0feh
+ 9E7A 20CA779EFE30              db      020h, 0cah, 077h, 09eh, 0feh, 030h
+ 9E80 D8FE323FC91E              db      0d8h, 0feh, 032h, 03fh, 0c9h, 01eh
+ 9E86 28C3E885C327              db      028h, 0c3h, 0e8h, 085h, 0c3h, 027h
+ 9E8C 823E00324D05              db      082h, 03eh, 000h, 032h, 04dh, 005h
+CP/M ASM86 1.1  SOURCE: V20BASIC.ASM                                                                         PAGE  29
+
+
+ 9E92 C32E82F5A0C1              db      0c3h, 02eh, 082h, 0f5h, 0a0h, 0c1h
+ 9E98 B83E00C9CDAD              db      0b8h, 03eh, 000h, 0c9h, 0cdh, 0adh
+ 9E9E 88C3E28C                  db      088h, 0c3h, 0e2h, 08ch
+                         ;
+                        ;       Reset
+                                org     0fff0h
+ FFF0 EA                        db      0eah    ;jmp
+ FFF1 4B81                      dw      start   ;offset
+ FFF3 0000                      dw      0000h   ;segment
+                        ;
+                                end
+
+
+END OF ASSEMBLY.  NUMBER OF ERRORS:   0.  USE FACTOR:  2%
+0b8h, 03eh, 000h, 0c9h, 0cdh, 0adh
+ 9
